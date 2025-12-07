@@ -33,7 +33,7 @@ class YouTubeGenerator:
         except ImportError:
             raise ImportError(
                 "ollama is required for YouTube generation. "
-                "Install with: pip install ollama\n"
+                "Install with: pip install opengling[youtube]\n"
                 "Also ensure Ollama is running: https://ollama.ai"
             )
     

@@ -30,7 +30,7 @@ class AutoZoomProcessor:
         except ImportError:
             raise ImportError(
                 "mediapipe is required for auto-zoom. "
-                "Install with: pip install mediapipe"
+                "Install with: pip install opengling[zoom]"
             )
         
         self._mp_face = mp.solutions.face_detection

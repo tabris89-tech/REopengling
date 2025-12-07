@@ -22,7 +22,7 @@ OpenGling automatically removes silences, filler words, and bad takes from your 
 
 ### Prerequisites
 
-- Python 3.10+
+- Python 3.10 - 3.13 (3.14 not yet supported by some dependencies)
 - FFmpeg (required for video processing)
 - Ollama (optional, for YouTube metadata generation)
 
@@ -47,10 +47,17 @@ sudo apt install ffmpeg
 
 ```bash
 # Clone or download the repository
+git clone https://github.com/poopstain112/opengling.git
 cd opengling
 
-# Install dependencies
+# Install core dependencies
 pip install -e .
+
+# Install with optional features:
+pip install -e ".[all]"     # All optional features
+pip install -e ".[zoom]"    # Auto-zoom (mediapipe, opencv)
+pip install -e ".[mcp]"     # MCP server integration
+pip install -e ".[youtube]" # YouTube metadata generation
 
 # Download spaCy model for filler word detection
 python -m spacy download en_core_web_sm
