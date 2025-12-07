@@ -1,0 +1,82 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "opengling"
+version = "1.0.0"
+description = "Open source Gling alternative - AI-powered video editing for content creators"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [
+    {name = "OpenGling Contributors"}
+]
+keywords = ["video-editing", "ai", "youtube", "silence-removal", "transcription", "mcp"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Multimedia :: Video",
+]
+
+dependencies = [
+    "faster-whisper>=1.0.0",
+    "moviepy>=1.0.3",
+    "pydub>=0.25.1",
+    "ffmpeg-python>=0.2.0",
+    "webrtcvad>=2.0.10",
+    "spacy>=3.7.0",
+    "mediapipe>=0.10.0",
+    "opencv-python>=4.8.0",
+    "noisereduce>=3.0.0",
+    "scipy>=1.11.0",
+    "numpy>=1.24.0",
+    "mcp>=1.0.0",
+    "fastapi>=0.109.0",
+    "uvicorn>=0.27.0",
+    "python-multipart>=0.0.6",
+    "websockets>=12.0",
+    "ollama>=0.1.0",
+    "pydantic>=2.5.0",
+    "rich>=13.7.0",
+    "typer>=0.9.0",
+    "python-dotenv>=1.0.0",
+    "aiofiles>=23.2.1",
+    "pyyaml>=6.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "httpx>=0.26.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+]
+
+[project.scripts]
+opengling = "opengling.cli.main:app"
+opengling-server = "opengling.mcp_server:main"
+opengling-web = "opengling.web:main"
+
+[project.urls]
+Homepage = "https://github.com/opengling/opengling"
+Documentation = "https://github.com/opengling/opengling#readme"
+Repository = "https://github.com/opengling/opengling"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.black]
+line-length = 100
+target-version = ['py310', 'py311', 'py312']
+
+[tool.ruff]
+line-length = 100
+select = ["E", "F", "I", "N", "W"]
+ignore = ["E501"]
+

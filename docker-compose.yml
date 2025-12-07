@@ -1,0 +1,49 @@
+# OpenGling Docker Compose Configuration
+# Run with: docker-compose up
+
+version: '3.8'
+
+services:
+  opengling:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      # Mount videos directory for processing
+      - ./videos:/app/videos
+      # Mount output directory for exports
+      - ./output:/app/output
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+    
+  # Optional: Ollama for YouTube metadata generation
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: unless-stopped
+    profiles:
+      - with-ollama
+
+volumes:
+  ollama_data:
+
+# Usage:
+# 
+# Basic (without Ollama):
+#   docker-compose up
+#
+# With Ollama for YouTube metadata:
+#   docker-compose --profile with-ollama up
+#
+# Build and run:
+#   docker-compose up --build
+#
+# Run in background:
+#   docker-compose up -d
+

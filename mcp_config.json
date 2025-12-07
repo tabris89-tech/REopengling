@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "opengling": {
+      "command": "python",
+      "args": ["-m", "opengling.mcp_server"],
+      "cwd": ".",
+      "env": {}
+    }
+  }
+}
+
