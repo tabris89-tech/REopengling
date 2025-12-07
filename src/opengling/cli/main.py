@@ -6,11 +6,11 @@ import logging
 import glob as glob_module
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional
 
 import typer
 from rich.console import Console
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeElapsedColumn, TaskID
+from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeElapsedColumn
 from rich.table import Table
 from rich.panel import Panel
 
@@ -138,20 +138,21 @@ def process(
             raise typer.Exit(1)
         caption_format = caption_map[captions]
     
-    # Build config
-    config = ProcessingConfig(
-        remove_silences=not no_silence,
-        silence_threshold=silence_threshold,
-        remove_fillers=not no_fillers,
-        detect_bad_takes=not no_bad_takes,
-        remove_noise=noise_removal,
-        auto_zoom=auto_zoom,
-        whisper_model=model,
+    # Build config - load from file and merge with CLI options
+    config = load_config_with_file(
+        model=model,
         language=language,
-        output_format=format_map[format],
-        caption_format=caption_format,
-        generate_youtube_metadata=youtube,
+        silence_threshold=silence_threshold,
+        no_silence=no_silence,
+        no_fillers=no_fillers,
+        no_bad_takes=no_bad_takes,
+        noise_removal=noise_removal,
+        auto_zoom=auto_zoom,
     )
+    # Override with format-specific options
+    config.output_format = format_map[format]
+    config.caption_format = caption_format
+    config.generate_youtube_metadata = youtube
     
     # Show what we're doing
     console.print(Panel.fit(

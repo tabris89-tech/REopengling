@@ -64,9 +64,9 @@ opengling-server = "opengling.mcp_server:main"
 opengling-web = "opengling.web:main"
 
 [project.urls]
-Homepage = "https://github.com/opengling/opengling"
-Documentation = "https://github.com/opengling/opengling#readme"
-Repository = "https://github.com/opengling/opengling"
+Homepage = "https://github.com/poopstain112/opengling"
+Documentation = "https://github.com/poopstain112/opengling#readme"
+Repository = "https://github.com/poopstain112/opengling"
 
 [tool.setuptools.packages.find]
 where = ["src"]

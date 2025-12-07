@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import atexit
-import json
 import logging
 import shutil
 import tempfile
@@ -17,7 +16,7 @@ from typing import Optional
 import numpy as np
 from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
 from opengling.core.models import ProcessingConfig, ExportFormat, EditDecision, EditType
