@@ -1,32 +1,25 @@
-# OpenGling
+# REopengling
 
-**Open Source Gling Alternative** - AI-powered video editing for content creators.
+**AI Video Editor** — форк [OpenGling](https://github.com/poopstain112/opengling) с улучшениями.
 
-OpenGling automatically removes silences, filler words, and bad takes from your videos, just like Gling, but completely open source!
+Автоматически удаляет тишину, слова-паразиты и неудачные дубли из видео.
 
-## Features
+---
 
-- **Automatic Silence Removal** - Detects and removes silent pauses
-- **Filler Word Detection** - Removes "um", "uh", "like", "you know", etc.
-- **Bad Takes Detection** - Identifies stutters, restarts, and mistakes
-- **AI Transcription** - Full speech-to-text with word-level timestamps using Whisper
-- **Text-Based Editing** - Edit your video by editing the transcript
-- **Auto-Generated Captions** - Export SRT or VTT subtitles
-- **Auto-Zoom/Framing** - Face detection-based automatic zoom effects
-- **Noise Removal** - ML-powered background noise reduction
-- **YouTube Optimization** - Generate titles, descriptions, and chapters
-- **Export to Pro Tools** - FCPXML (Final Cut Pro), Premiere Pro XML, DaVinci Resolve EDL
-- **MCP Tool** - Use with AI assistants like Claude via Model Context Protocol
+## ✨ Что нового (наши изменения)
 
-## Installation
+- **Прогресс-бар в реальном времени** — больше не висит на 0% при анализе
+- **Звук в экспортированном видео** — исправлена потеря аудиодорожки
+- **Экспорт в 10 раз быстрее** — без повторного запуска Whisper
+- **Всплывающие уведомления** — о завершении загрузки, анализа и экспорта
+- **Авто-скачивание** — готовый файл скачивается сам
+- **Устойчивость к ошибкам** — больше KeyError при перезапуске сервера
 
-### Prerequisites
+---
 
-- Python 3.10 - 3.13 (3.14 not yet supported by some dependencies)
-- FFmpeg (required for video processing)
-- Ollama (optional, for YouTube metadata generation)
+## 🚀 Быстрый старт
 
-### Install FFmpeg
+### 1. Установи FFmpeg
 
 **Windows:**
 ```bash
@@ -43,85 +36,85 @@ brew install ffmpeg
 sudo apt install ffmpeg
 ```
 
-### Install OpenGling
+### 2. Скачай и установи REopengling
 
 ```bash
-# Clone or download the repository
-git clone https://github.com/poopstain112/opengling.git
-cd opengling
+git clone https://github.com/tabris89-tech/REopengling.git
+cd REopengling
 
-# Install core dependencies
+# Создай виртуальное окружение (рекомендуется)
+python -m venv venv
+
+# Активируй
+# Windows:
+venv\Scripts\activate
+# macOS/Linux:
+source venv/bin/activate
+
+# Установи пакет
 pip install -e .
 
-# Install with optional features:
-pip install -e ".[all]"     # All optional features
-pip install -e ".[zoom]"    # Auto-zoom (mediapipe, opencv)
-pip install -e ".[mcp]"     # MCP server integration
-pip install -e ".[youtube]" # YouTube metadata generation
+# Дополнительные возможности (по желанию):
+pip install -e ".[all]"     # Всё включено
+pip install -e ".[zoom]"    # Авто-зум (mediapipe, opencv)
+pip install -e ".[mcp]"     # MCP сервер для Claude
+pip install -e ".[youtube]" # Генерация метаданных YouTube
 
-# Download spaCy model for filler word detection
+# Скачай модель для поиска слов-паразитов
 python -m spacy download en_core_web_sm
 ```
 
-## Usage
-
-### Command Line
-
-```bash
-# Process a video (removes silences, fillers, bad takes)
-opengling process video.mp4
-
-# Process with noise removal and auto-zoom
-opengling process video.mp4 --noise --zoom
-
-# Process and generate captions
-opengling process video.mp4 --captions srt
-
-# Process with YouTube metadata generation
-opengling process video.mp4 --youtube
-
-# Export to Final Cut Pro
-opengling process video.mp4 --format fcpxml
-
-# Export to Premiere Pro
-opengling process video.mp4 --format premiere_xml
-
-# Export to DaVinci Resolve
-opengling process video.mp4 --format davinci_edl
-
-# Just transcribe (no editing)
-opengling transcribe video.mp4
-
-# Analyze without editing (preview what would be removed)
-opengling analyze video.mp4 --detailed
-```
-
-### Web UI
-
-Start the web server for a visual review interface:
+### 3. Запусти веб-интерфейс
 
 ```bash
 opengling serve
-
-# Or specify host and port
-opengling serve --host 0.0.0.0 --port 8080
 ```
 
-Then open http://localhost:8000 in your browser.
+Открой браузер → http://localhost:8000
 
-The web UI allows you to:
-- Upload videos
-- Review the transcript
-- See what will be cut
-- Toggle individual edits (keep/cut)
-- Export to various formats
+Готово. Загружай видео и смотри результат.
 
-### MCP Tool (for AI Assistants)
+---
 
-OpenGling can be used as an MCP tool with AI assistants like Claude.
+## 📖 Использование
 
-Add to your MCP configuration:
+### Веб-интерфейс (рекомендуется)
 
+```bash
+opengling serve
+```
+
+Возможности:
+- Загрузить видео
+- Посмотреть расшифровку
+- Увидеть, что будет вырезано
+- Переключить отдельные правки (оставить/вырезать)
+- Экспорт в MP4, Final Cut Pro, Premiere Pro, DaVinci Resolve
+
+### Командная строка
+
+```bash
+# Полный цикл: тишина + паразиты + дубли
+opengling process video.mp4
+
+# С шумоподавлением и авто-зумом
+opengling process video.mp4 --noise --zoom
+
+# С экспортом субтитров
+opengling process video.mp4 --captions srt
+
+# Только расшифровка
+opengling transcribe video.mp4
+
+# Анализ без редактирования (предпросмотр)
+opengling analyze video.mp4 --detailed
+```
+
+### MCP для AI-ассистентов
+
+REopengling можно подключить к Claude через MCP.
+
+Добавь в свой `mcp_config.json`:
 ```json
 {
   "mcpServers": {
@@ -133,110 +126,87 @@ Add to your MCP configuration:
 }
 ```
 
-Available MCP tools:
-- `process_video` - Full video processing pipeline
-- `transcribe` - Transcribe audio/video to text
-- `analyze_video` - Analyze without editing
-- `generate_captions` - Generate SRT/VTT subtitles
-- `generate_youtube_metadata` - Create titles, descriptions, chapters
-- `export_timeline` - Export to pro editing software
+> **Примечание:** В `mcp_config.json` в этом репозитории уже настроены серверы `filesystem`, `git` и `github`. Пути в нём (`C:\Users\kantairon\opengling`) замени на свои.
+
+**Доступные инструменты:**
+- `process_video` — полный пайплайн обработки
+- `transcribe` — расшифровка аудио/видео
+- `analyze_video` — анализ без редактирования
+- `generate_captions` — генерация SRT/VTT субтитров
+- `generate_youtube_metadata` — создание заголовков, описаний, глав
+- `export_timeline` — экспорт в монтажные программы
 
 ### Python API
 
 ```python
 from opengling import VideoProcessor, ProcessingConfig
 
-# Configure processing
 config = ProcessingConfig(
     remove_fillers=True,
     detect_bad_takes=True,
     remove_noise=True,
-    auto_zoom=False,
-    whisper_model="base",  # tiny, base, small, medium, large-v3
-    silence_threshold=0.5,  # seconds
+    whisper_model="base",
 )
 
-# Process a video
 processor = VideoProcessor(config)
 result = processor.process("input.mp4", "output.mp4")
 
-# Print stats
-print(f"Time saved: {result.time_saved:.1f}s ({result.time_saved_percentage:.1f}%)")
-print(f"Silences removed: {result.silences_removed}")
-print(f"Fillers removed: {result.fillers_removed}")
-print(f"Bad takes removed: {result.bad_takes_removed}")
-
-# Access transcript
-print(result.full_transcript)
-
-# Just analyze (no output file)
-result = processor.analyze_only("input.mp4")
-for edit in result.edit_decisions:
-    print(f"[{edit.start:.1f}s - {edit.end:.1f}s] {edit.edit_type}: {edit.reason}")
+print(f"Сэкономлено: {result.time_saved:.1f}с ({result.time_saved_percentage:.1f}%)")
+print(f"Тишина удалена: {result.silences_removed}")
+print(f"Паразиты удалены: {result.fillers_removed}")
+print(f"Дубли удалены: {result.bad_takes_removed}")
 ```
 
-## Configuration Options
+---
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `silence_threshold` | 0.5 | Minimum silence duration to remove (seconds) |
-| `silence_padding` | 0.1 | Padding around speech regions (seconds) |
-| `remove_fillers` | True | Remove filler words |
-| `detect_bad_takes` | True | Detect and remove bad takes |
-| `remove_noise` | False | Apply noise reduction |
-| `noise_reduction_strength` | 0.5 | Noise reduction intensity (0-1) |
-| `auto_zoom` | False | Enable face-tracking zoom |
-| `max_zoom` | 1.5 | Maximum zoom level |
-| `whisper_model` | "base" | Whisper model size |
-| `language` | None | Language code (auto-detect if None) |
+## ⚙️ Настройки
 
-## Whisper Models
+| Параметр | По умолчанию | Описание |
+|----------|-------------|----------|
+| `silence_threshold` | 0.5 | Мин. длительность тишины для удаления (сек) |
+| `silence_padding` | 0.1 | Отступ вокруг речи (сек) |
+| `remove_fillers` | True | Удалять слова-паразиты |
+| `detect_bad_takes` | True | Удалять неудачные дубли |
+| `remove_noise` | False | Шумоподавление |
+| `noise_reduction_strength` | 0.5 | Интенсивность шумоподавления |
+| `auto_zoom` | False | Авто-зум по лицу |
+| `max_zoom` | 1.5 | Макс. увеличение |
+| `whisper_model` | "base" | Модель Whisper |
+| `language` | None | Язык (авто если None) |
 
-| Model | Speed | Accuracy | VRAM Required |
-|-------|-------|----------|---------------|
-| tiny | Fastest | Lower | ~1 GB |
-| base | Fast | Good | ~1 GB |
-| small | Medium | Better | ~2 GB |
-| medium | Slower | Great | ~5 GB |
-| large-v3 | Slowest | Best | ~10 GB |
+### Модели Whisper
 
-## Export Formats
+| Модель | Скорость | Точность | VRAM |
+|--------|----------|----------|------|
+| tiny | 🚀 | Низкая | ~1 GB |
+| base | ⚡ | Хорошая | ~1 GB |
+| small | 🚶 | Лучше | ~2 GB |
+| medium | 🐢 | Отличная | ~5 GB |
+| large-v3 | 🐌 | Наилучшая | ~10 GB |
 
-### MP4
-Direct video export with all edits applied. The edited video is ready to upload.
+---
 
-### FCPXML (Final Cut Pro)
-Import into Final Cut Pro for additional editing. All edit points are preserved as clips on the timeline.
+## 🛠 Технологии
 
-### Premiere Pro XML
-Import into Adobe Premiere Pro. Maintains all cut points for fine-tuning.
+- **[faster-whisper](https://github.com/SYSTRAN/faster-whisper)** — распознавание речи
+- **[FFmpeg](https://ffmpeg.org/)** — обработка видео/аудио
+- **[MoviePy](https://github.com/Zulko/moviepy)** — видеомонтаж
+- **[WebRTC VAD](https://github.com/wiseman/py-webrtcvad)** — детекция речи
+- **[spaCy](https://spacy.io/)** — NLP
+- **[MediaPipe](https://github.com/google/mediapipe)** — детекция лица
+- **[noisereduce](https://github.com/timsainb/noisereduce)** — шумоподавление
+- **[Ollama](https://ollama.ai/)** — локальный LLM
+- **[MCP](https://modelcontextprotocol.io/)** — Model Context Protocol
 
-### DaVinci Resolve EDL
-Edit Decision List format for DaVinci Resolve. Import via File > Import > EDL.
+---
 
-## Technology Stack
+## 📝 Оригинальный проект
 
-OpenGling uses state-of-the-art open source tools:
+REopengling — форк [poopstain112/opengling](https://github.com/poopstain112/opengling).  
+Распространяется под лицензией **MIT** — см. [LICENSE](LICENSE).
 
-- **[faster-whisper](https://github.com/SYSTRAN/faster-whisper)** - GPU-accelerated speech recognition
-- **[FFmpeg](https://ffmpeg.org/)** - Video/audio processing
-- **[MoviePy](https://github.com/Zulko/moviepy)** - Video editing
-- **[WebRTC VAD](https://github.com/wiseman/py-webrtcvad)** - Voice activity detection
-- **[spaCy](https://spacy.io/)** - Natural language processing
-- **[MediaPipe](https://github.com/google/mediapipe)** - Face detection
-- **[noisereduce](https://github.com/timsainb/noisereduce)** - ML noise reduction
-- **[Ollama](https://ollama.ai/)** - Local LLM for YouTube metadata
-- **[MCP](https://modelcontextprotocol.io/)** - Model Context Protocol
+---
 
-## Contributing
+## 🤝 Вклад
 
-Contributions are welcome! Please feel free to submit issues and pull requests.
-
-## License
-
-MIT License - See LICENSE file for details.
-
-## Acknowledgments
-
-Inspired by [Gling](https://gling.ai/), the AI video editor for YouTubers.
-
+Пулл-реквесты и issue приветствуются.
