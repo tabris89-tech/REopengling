@@ -151,9 +151,11 @@ def _render_with_ffmpeg(
                     )
                 else:
                     stream = ffmpeg.output(
-                        stream,
+                        stream.video,
+                        stream.audio,
                         str(segment_path),
-                        c='copy',  # Copy without re-encoding
+                        vcodec='copy',
+                        acodec='aac',
                     )
                 
                 stream.overwrite_output().run(quiet=True)
@@ -172,13 +174,17 @@ def _render_with_ffmpeg(
             (
                 ffmpeg
                 .input(str(concat_file), format='concat', safe=0)
-                .output(str(output_path), c='copy')
+                .output(
+                    str(output_path),
+                    vcodec='copy',
+                    acodec='aac',
+                )
                 .overwrite_output()
                 .run(quiet=True)
             )
         except ffmpeg.Error as e:
             logger.error(f"Error concatenating: {e}")
-            # Fall back to re-encoding
+            # Fall back to full re-encoding
             (
                 ffmpeg
                 .input(str(concat_file), format='concat', safe=0)

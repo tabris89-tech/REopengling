@@ -91,6 +91,7 @@ class VideoProcessor:
             # Step 1: Extract audio
             self._report_progress(progress_callback, "Extracting audio", 0.05)
             audio_path = self._extract_audio(input_path, temp_path)
+            output_audio_path = self._extract_output_audio(input_path, temp_path)
             result.original_duration = self._get_duration(input_path)
             
             # Step 2: Apply noise removal (if enabled)
@@ -161,7 +162,7 @@ class VideoProcessor:
                     result.output_path,
                     result.edit_decisions,
                     result.zoom_keyframes,
-                    audio_path if self.config.remove_noise else None,
+                    audio_path if self.config.remove_noise else output_audio_path,
                 )
             else:
                 # Export timeline
@@ -234,6 +235,32 @@ class VideoProcessor:
         
         return audio_path
     
+    def _extract_output_audio(self, video_path: Path, temp_dir: Path) -> Path:
+        """Extract audio at original quality for rendering."""
+        try:
+            import ffmpeg
+        except ImportError:
+            raise ImportError("ffmpeg-python is required")
+
+        audio_path = temp_dir / "output_audio.wav"
+
+        try:
+            (
+                ffmpeg
+                .input(str(video_path))
+                .output(
+                    str(audio_path),
+                    acodec='pcm_s16le',
+                )
+                .overwrite_output()
+                .run(quiet=True)
+            )
+        except ffmpeg.Error as e:
+            logger.error(f"FFmpeg error extracting output audio: {e}")
+            raise
+
+        return audio_path
+
     def _get_duration(self, video_path: Path) -> float:
         """Get video duration in seconds."""
         try:
@@ -276,6 +303,7 @@ class VideoProcessor:
     def analyze_only(
         self,
         input_path: Path | str,
+        progress_callback: Optional[Callable[[str, float], None]] = None,
     ) -> ProcessingResult:
         """
         Analyze video without rendering output.
@@ -284,6 +312,7 @@ class VideoProcessor:
         
         Args:
             input_path: Path to input video/audio file
+            progress_callback: Optional callback for progress updates (stage, percent)
             
         Returns:
             ProcessingResult with analysis data (no output file)
@@ -296,19 +325,27 @@ class VideoProcessor:
             temp_path = Path(temp_dir)
             
             # Extract and analyze
+            self._report_progress(progress_callback, "Extracting audio", 0.05)
             audio_path = self._extract_audio(input_path, temp_path)
             result.original_duration = self._get_duration(input_path)
             
             # Transcribe
+            self._report_progress(progress_callback, "Transcribing", 0.25)
             result.segments = self._transcriber.transcribe(audio_path)
             result.full_transcript = get_full_transcript(result.segments)
             
             # Detect all issues
+            self._report_progress(progress_callback, "Detecting silences", 0.50)
             silence_edits = self._silence_detector.detect_silences(audio_path)
+            
+            self._report_progress(progress_callback, "Detecting fillers", 0.65)
             filler_edits = self._filler_detector.detect_fillers(result.segments)
+            
+            self._report_progress(progress_callback, "Detecting bad takes", 0.80)
             bad_take_edits = self._bad_takes_detector.detect_bad_takes(result.segments)
             
             # Merge
+            self._report_progress(progress_callback, "Merging edits", 0.90)
             all_edits = silence_edits + filler_edits + bad_take_edits
             result.edit_decisions = merge_overlapping_regions(all_edits)
             
@@ -326,6 +363,7 @@ class VideoProcessor:
             cut_duration = sum(e.duration for e in result.edit_decisions if not e.keep)
             result.edited_duration = result.original_duration - cut_duration
         
+        self._report_progress(progress_callback, "Complete", 1.0)
         return result
     
     def transcribe_only(

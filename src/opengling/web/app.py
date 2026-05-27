@@ -192,6 +192,8 @@ async def process_video_task(job_id: str, request: ProcessingRequest):
         
         def progress_callback(stage: str, percent: float):
             with jobs_lock:
+                if job_id not in jobs:
+                    return
                 jobs[job_id]["stage"] = stage
                 jobs[job_id]["progress"] = int(percent * 100)
         
@@ -201,13 +203,12 @@ async def process_video_task(job_id: str, request: ProcessingRequest):
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(
             None,
-            lambda: processor.analyze_only(input_path)
+            lambda: processor.analyze_only(input_path, progress_callback)
         )
         
-        # Update progress manually since analyze_only doesn't have callback
-        progress_callback("Analyzing", 0.5)
-        
         with jobs_lock:
+            if job_id not in jobs:
+                return
             jobs[job_id]["status"] = "analyzed"
             jobs[job_id]["progress"] = 100
             jobs[job_id]["stage"] = "Complete"
@@ -244,6 +245,8 @@ async def process_video_task(job_id: str, request: ProcessingRequest):
     except Exception as e:
         logger.exception("Processing error")
         with jobs_lock:
+            if job_id not in jobs:
+                return
             jobs[job_id]["status"] = "error"
             jobs[job_id]["error"] = str(e)
 
@@ -483,9 +486,6 @@ async def export_video_task(job_id: str, format: str):
         
         export_format = format_map.get(format, ExportFormat.MP4)
         
-        config = ProcessingConfig(output_format=export_format)
-        processor = VideoProcessor(config)
-        
         input_path = Path(job["input_path"])
         
         # Reconstruct edit decisions
@@ -500,15 +500,57 @@ async def export_video_task(job_id: str, format: str):
             for e in job["result"]["edit_decisions"]
         ]
         
+        def progress_callback(stage: str, percent: float):
+            with jobs_lock:
+                if job_id not in jobs:
+                    return
+                jobs[job_id]["stage"] = stage
+                jobs[job_id]["progress"] = int(percent * 100)
+        
         loop = asyncio.get_event_loop()
         
         if export_format == ExportFormat.MP4:
-            result = await loop.run_in_executor(
-                None,
-                lambda: processor.process(input_path)
-            )
+            output_path = input_path.parent / f"{input_path.stem}_edited.mp4"
+            
+            def render_task():
+                import ffmpeg
+                import tempfile
+                from opengling.core.render import render_video
+                
+                progress_callback("Extracting audio", 0.0)
+                
+                with tempfile.TemporaryDirectory() as tmp:
+                    tmp_path = Path(tmp)
+                    audio_out = tmp_path / "audio.wav"
+                    try:
+                        (
+                            ffmpeg
+                            .input(str(input_path))
+                            .output(str(audio_out), acodec='pcm_s16le')
+                            .overwrite_output()
+                            .run(quiet=True)
+                        )
+                    except ffmpeg.Error as e:
+                        logger.warning(f"Audio extraction failed for export: {e}")
+                        audio_out = None
+                    
+                    progress_callback("Rendering video", 0.2)
+                    
+                    result_path = render_video(
+                        input_path=input_path,
+                        output_path=output_path,
+                        edit_decisions=edit_decisions,
+                        audio_path=audio_out,
+                    )
+                    
+                    progress_callback("Complete", 1.0)
+                    return result_path
+            
+            result_path = await loop.run_in_executor(None, render_task)
             with jobs_lock:
-                jobs[job_id]["output_path"] = str(result.output_path)
+                if job_id not in jobs:
+                    return
+                jobs[job_id]["output_path"] = str(result_path)
         else:
             from opengling.export import export_timeline
             from opengling.core.render import get_duration
@@ -533,14 +575,20 @@ async def export_video_task(job_id: str, format: str):
                 )
             )
             with jobs_lock:
+                if job_id not in jobs:
+                    return
                 jobs[job_id]["output_path"] = str(output_path)
         
         with jobs_lock:
+            if job_id not in jobs:
+                return
             jobs[job_id]["status"] = "complete"
         
     except Exception as e:
         logger.exception("Export error")
         with jobs_lock:
+            if job_id not in jobs:
+                return
             jobs[job_id]["status"] = "error"
             jobs[job_id]["error"] = str(e)
 
@@ -754,6 +802,75 @@ def get_index_html() -> HTMLResponse:
         .glow {
             box-shadow: 0 0 40px rgba(139, 92, 246, 0.3);
         }
+
+        /* Toast notifications */
+        .toast-container {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            z-index: 9999;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            pointer-events: none;
+        }
+        .toast {
+            pointer-events: auto;
+            padding: 14px 20px;
+            border-radius: 12px;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            min-width: 280px;
+            max-width: 420px;
+            animation: toastIn 0.3s ease-out;
+            backdrop-filter: blur(12px);
+        }
+        .toast.leaving {
+            animation: toastOut 0.3s ease-in forwards;
+        }
+        .toast-icon {
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+            font-size: 14px;
+            font-weight: bold;
+        }
+        .toast-icon.success { background: rgba(34, 197, 94, 0.2); color: #22c55e; }
+        .toast-icon.info { background: rgba(6, 182, 212, 0.2); color: #06b6d4; }
+        .toast-icon.error { background: rgba(239, 68, 68, 0.2); color: #ef4444; }
+        .toast-body { flex: 1; font-size: 14px; color: #e2e8f0; }
+        .toast-close {
+            flex-shrink: 0;
+            width: 24px;
+            height: 24px;
+            border: none;
+            background: rgba(255,255,255,0.1);
+            border-radius: 6px;
+            color: #94a3b8;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 14px;
+            transition: background 0.2s;
+        }
+        .toast-close:hover { background: rgba(255,255,255,0.2); color: #fff; }
+        @keyframes toastIn {
+            from { transform: translateX(100%); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
+        }
+        @keyframes toastOut {
+            from { transform: translateX(0); opacity: 1; }
+            to { transform: translateX(100%); opacity: 0; }
+        }
     </style>
 </head>
 <body class="text-gray-100" x-data="app()">
@@ -782,6 +899,17 @@ def get_index_html() -> HTMLResponse:
             </div>
         </div>
     </header>
+
+    <!-- Toast notifications -->
+    <div class="toast-container">
+        <template x-for="(toast, i) in notifications" :key="toast.id">
+            <div class="toast" :class="{ leaving: toast.leaving }">
+                <div class="toast-icon" :class="toast.type" x-text="toast.type === 'success' ? '✓' : toast.type === 'error' ? '✗' : 'ℹ'"></div>
+                <div class="toast-body" x-text="toast.message"></div>
+                <button class="toast-close" @click="dismissToast(i)">✕</button>
+            </div>
+        </template>
+    </div>
 
     <main class="max-w-7xl mx-auto px-6 py-8" @keydown.window="handleKeydown($event)">
         <!-- Upload Section -->
@@ -1010,6 +1138,25 @@ def get_index_html() -> HTMLResponse:
                 playheadPosition: 0,
                 waveformData: [],
                 player: null,
+                notifications: [],
+                notificationCounter: 0,
+
+                addNotification(type, message) {
+                    const id = ++this.notificationCounter;
+                    this.notifications.push({ id, type, message, leaving: false });
+                    setTimeout(() => {
+                        const idx = this.notifications.findIndex(n => n.id === id);
+                        if (idx !== -1) {
+                            this.notifications[idx].leaving = true;
+                            setTimeout(() => { this.notifications.splice(idx, 1); }, 300);
+                        }
+                    }, 5000);
+                },
+
+                dismissToast(index) {
+                    this.notifications[index].leaving = true;
+                    setTimeout(() => { this.notifications.splice(index, 1); }, 300);
+                },
 
                 formatTime(seconds) {
                     if (!seconds || isNaN(seconds)) return '0:00';
@@ -1034,6 +1181,7 @@ def get_index_html() -> HTMLResponse:
                         });
                         const data = await response.json();
                         this.jobId = data.job_id;
+                        this.addNotification('success', 'Загрузка видео завершена');
                         await this.startProcessing();
                     } catch (error) {
                         console.error('Upload error:', error);
@@ -1077,17 +1225,32 @@ def get_index_html() -> HTMLResponse:
                                 this.result = data.result;
                             }
 
-                            if (data.status === 'analyzed' || data.status === 'complete') {
+                            if (data.status === 'analyzed') {
                                 clearInterval(this.pollInterval);
+                                this.addNotification('success', 'Анализ видео завершён');
                                 this.$nextTick(() => {
                                     this.initVideoPlayer();
                                     this.loadWaveform();
                                 });
                             }
 
+                            if (data.status === 'complete') {
+                                clearInterval(this.pollInterval);
+                                this.addNotification('success', 'Экспорт видео завершён');
+                                this.$nextTick(() => {
+                                    // Auto-download
+                                    const a = document.createElement('a');
+                                    a.href = `/api/download/${this.jobId}`;
+                                    a.download = 'video_edited.mp4';
+                                    document.body.appendChild(a);
+                                    a.click();
+                                    document.body.removeChild(a);
+                                });
+                            }
+
                             if (data.status === 'error') {
                                 clearInterval(this.pollInterval);
-                                alert('Error: ' + data.error);
+                                this.addNotification('error', 'Ошибка: ' + data.error);
                             }
                         } catch (error) {
                             console.error('Polling error:', error);
