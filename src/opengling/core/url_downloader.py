@@ -6,11 +6,13 @@ import json
 import logging
 import os
 import platform
+import queue
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -391,6 +393,9 @@ def download_video(
         "--newline",
         "--max-filesize", str(max_filesize),
         "--remux-video", "mp4",
+        "--socket-timeout", "30",
+        "--retries", "3",
+        "--fragment-retries", "3",
         "-o", str(output_dir / "%(title)s.%(ext)s"),
     ]
 
@@ -421,31 +426,65 @@ def download_video(
         raise RuntimeError("yt-dlp не найден. Установите: pip install yt-dlp")
 
     downloaded_path: Optional[Path] = None
+    line_timeout = 60  # kill if no stderr output for 60s
 
-    for line in process.stderr:
-        line = line.strip()
-        logger.debug(f"yt-dlp: {line}")
+    # Thread to read stderr lines into a queue
+    stderr_q: queue.Queue[Optional[str]] = queue.Queue()
 
-        match = PROGRESS_RE.search(line)
-        if match and progress_callback:
-            percent = float(match.group(1))
-            eta = match.group(2)
-            if eta:
-                progress_callback(percent / 100.0, f"Скачивание... {eta} осталось")
-            else:
-                progress_callback(percent / 100.0, f"Скачивание... {percent:.0f}%")
+    def _reader():
+        try:
+            for line in iter(process.stderr.readline, ""):
+                stderr_q.put(line)
+        finally:
+            stderr_q.put(None)  # sentinel
+            process.stderr.close()
 
-        for regex in [DEST_RE, MERGER_RE, EXTRACT_RE]:
-            m = regex.search(line)
-            if m:
-                path_str = m.group(1).strip()
-                if path_str:
-                    downloaded_path = Path(path_str)
+    reader = threading.Thread(target=_reader, daemon=True)
+    reader.start()
 
-        if "ERROR:" in line:
-            logger.error(f"Download error: {line}")
+    try:
+        while True:
+            try:
+                line = stderr_q.get(timeout=line_timeout)
+            except queue.Empty:
+                process.kill()
+                process.wait()
+                raise RuntimeError(
+                    f"Таймаут скачивания: нет данных от yt-dlp в течение {line_timeout}с"
+                )
 
-    process.wait()
+            if line is None:
+                break  # EOF
+
+            line = line.strip()
+            logger.debug(f"yt-dlp: {line}")
+
+            match = PROGRESS_RE.search(line)
+            if match and progress_callback:
+                percent = float(match.group(1))
+                eta = match.group(2)
+                if eta:
+                    progress_callback(percent / 100.0, f"Скачивание... {eta} осталось")
+                else:
+                    progress_callback(percent / 100.0, f"Скачивание... {percent:.0f}%")
+
+            for regex in [DEST_RE, MERGER_RE, EXTRACT_RE]:
+                m = regex.search(line)
+                if m:
+                    path_str = m.group(1).strip()
+                    if path_str:
+                        downloaded_path = Path(path_str)
+
+            if "ERROR:" in line:
+                logger.error(f"Download error: {line}")
+
+    except BaseException:
+        process.kill()
+        raise
+
+    finally:
+        reader.join(timeout=5)
+        process.wait()
 
     if process.returncode != 0:
         stderr = process.stderr.read() if process.stderr else ""
@@ -547,6 +586,9 @@ def download_playlist(
         "--newline",
         "--max-filesize", str(MAX_DOWNLOAD_SIZE),
         "--remux-video", "mp4",
+        "--socket-timeout", "30",
+        "--retries", "3",
+        "--fragment-retries", "3",
         "-o", str(output_dir / "%(playlist_title)s/%(playlist_index)s - %(title)s.%(ext)s"),
     ]
 
@@ -570,20 +612,52 @@ def download_playlist(
         creationflags=subprocess.CREATE_NO_WINDOW if platform.system() == "Windows" else 0,
     )
 
-    for line in process.stderr:
-        line = line.strip()
-        match = PROGRESS_RE.search(line)
-        if match and progress_callback:
-            percent = float(match.group(1))
-            eta = match.group(2)
-            if eta:
-                progress_callback(percent / 100.0, f"Скачивание плейлиста... {eta} осталось")
-            else:
-                progress_callback(percent / 100.0, f"Скачивание плейлиста... {percent:.0f}%")
-        if "ERROR:" in line:
-            logger.error(f"Playlist download error: {line}")
+    line_timeout = 60
+    stderr_q: queue.Queue[Optional[str]] = queue.Queue()
 
-    process.wait()
+    def _reader():
+        try:
+            for line in iter(process.stderr.readline, ""):
+                stderr_q.put(line)
+        finally:
+            stderr_q.put(None)
+            process.stderr.close()
+
+    reader = threading.Thread(target=_reader, daemon=True)
+    reader.start()
+
+    try:
+        while True:
+            try:
+                line = stderr_q.get(timeout=line_timeout)
+            except queue.Empty:
+                process.kill()
+                process.wait()
+                raise RuntimeError(
+                    f"Таймаут скачивания: нет данных от yt-dlp в течение {line_timeout}с"
+                )
+
+            if line is None:
+                break
+
+            line = line.strip()
+            match = PROGRESS_RE.search(line)
+            if match and progress_callback:
+                percent = float(match.group(1))
+                eta = match.group(2)
+                if eta:
+                    progress_callback(percent / 100.0, f"Скачивание плейлиста... {eta} осталось")
+                else:
+                    progress_callback(percent / 100.0, f"Скачивание плейлиста... {percent:.0f}%")
+            if "ERROR:" in line:
+                logger.error(f"Playlist download error: {line}")
+
+    except BaseException:
+        process.kill()
+        raise
+    finally:
+        reader.join(timeout=5)
+        process.wait()
 
     if process.returncode != 0:
         stderr = process.stderr.read() if process.stderr else ""
