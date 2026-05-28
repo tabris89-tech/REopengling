@@ -416,7 +416,7 @@ def download_video(
     try:
         process = subprocess.Popen(
             cmd,
-            stdout=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
@@ -426,10 +426,11 @@ def download_video(
         raise RuntimeError("yt-dlp не найден. Установите: pip install yt-dlp")
 
     downloaded_path: Optional[Path] = None
+    stderr_lines: list[str] = []
 
     # Track timeouts and progress
-    line_timeout = 60           # kill if no stderr output for 60s
-    extraction_timeout = 180    # kill if no [download]% lines after 180s
+    line_timeout = 60
+    extraction_timeout = 180
     process_start_time = time.time()
     last_line_time = time.time()
     last_stage_update = 0.0
@@ -511,6 +512,7 @@ def download_video(
 
             if "ERROR:" in line:
                 logger.error(f"Download error: {line}")
+                stderr_lines.append(line)
 
     except BaseException:
         process.kill()
@@ -521,7 +523,7 @@ def download_video(
         process.wait()
 
     if process.returncode != 0:
-        stderr = process.stderr.read() if process.stderr else ""
+        stderr = "\n".join(stderr_lines) if stderr_lines else (process.stderr.read() if process.stderr else "")
         error_text = _clean_error(stderr)
         if "unsupported" in error_text.lower():
             raise RuntimeError(f"Сайт не поддерживается: {error_text}")
@@ -639,7 +641,7 @@ def download_playlist(
 
     process = subprocess.Popen(
         cmd,
-        stdout=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
         text=True,
         bufsize=1,
@@ -648,6 +650,7 @@ def download_playlist(
 
     line_timeout = 60
     extraction_timeout = 180
+    stderr_lines: list[str] = []
     process_start_time = time.time()
     last_line_time = time.time()
     last_stage_update = 0.0
@@ -714,6 +717,7 @@ def download_playlist(
                     progress_callback(0, f"{clean} ({elapsed:.0f}с)")
             if "ERROR:" in line:
                 logger.error(f"Playlist download error: {line}")
+                stderr_lines.append(line)
 
     except BaseException:
         process.kill()
@@ -723,7 +727,7 @@ def download_playlist(
         process.wait()
 
     if process.returncode != 0:
-        stderr = process.stderr.read() if process.stderr else ""
+        stderr = "\n".join(stderr_lines) if stderr_lines else (process.stderr.read() if process.stderr else "")
         raise RuntimeError(
             f"Ошибка скачивания плейлиста (код {process.returncode}):\n{_clean_error(stderr)}"
         )
