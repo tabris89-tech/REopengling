@@ -182,8 +182,6 @@ def process(
                 output_dir=download_dir,
                 progress_callback=dl_progress,
                 cookies_from_browser=cookies,
-                start_time=start_time,
-                end_time=end_time,
             )
         input_path = downloaded
         console.print(f"[green]✓[/green] Downloaded: {input_path.name}")

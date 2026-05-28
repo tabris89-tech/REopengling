@@ -255,7 +255,8 @@ async def download_url_task(job_id: str, url: str, start_time: float, end_time: 
             temp_dir = Path(jobs[job_id]["temp_dir"])
 
         with jobs_lock:
-            jobs[job_id]["stage"] = "Скачивание из URL..."
+            jobs[job_id]["stage"] = "Подключаюсь к источнику..."
+            jobs[job_id]["progress"] = 0
 
         downloaded = await asyncio.get_running_loop().run_in_executor(
             None,
@@ -263,8 +264,6 @@ async def download_url_task(job_id: str, url: str, start_time: float, end_time: 
                 url=url,
                 output_dir=temp_dir,
                 progress_callback=progress_callback,
-                start_time=start_time,
-                end_time=end_time,
             ),
         )
 
