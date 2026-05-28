@@ -371,9 +371,12 @@ async def process_video_task(job_id: str, request: ProcessingRequest, start_time
 
         # Run in thread pool with progress callback
         loop = asyncio.get_running_loop()
-        result = await loop.run_in_executor(
-            None,
-            lambda: processor.analyze_only(input_path, progress_callback)
+        result = await asyncio.wait_for(
+            loop.run_in_executor(
+                None,
+                lambda: processor.analyze_only(input_path, progress_callback)
+            ),
+            timeout=7200,
         )
 
         with jobs_lock:

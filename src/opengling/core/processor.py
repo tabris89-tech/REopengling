@@ -110,7 +110,7 @@ class VideoProcessor:
 
             # Step 3: Transcribe
             self._report_progress(progress_callback, "Transcribing", 0.20)
-            result.segments = self._transcriber.transcribe(audio_path)
+            result.segments = self._transcriber.transcribe(audio_path, progress_callback=progress_callback)
             result.full_transcript = get_full_transcript(result.segments)
 
             # Step 4: Detect silences
@@ -376,7 +376,7 @@ class VideoProcessor:
 
             # Transcribe
             self._report_progress(progress_callback, "Transcribing", 0.25)
-            result.segments = self._transcriber.transcribe(audio_path)
+            result.segments = self._transcriber.transcribe(audio_path, progress_callback=progress_callback)
             result.full_transcript = get_full_transcript(result.segments)
 
             # Detect all issues

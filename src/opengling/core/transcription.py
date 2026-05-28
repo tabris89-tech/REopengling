@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import logging
+import threading
+import time
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Callable, Iterator, Optional
 
 from opengling.core.models import ProcessingConfig, TranscriptSegment, TranscriptWord
 
@@ -65,6 +67,7 @@ class TranscriptionEngine:
         self,
         audio_path: Path | str,
         language: Optional[str] = None,
+        progress_callback: Optional[Callable[[str, float], None]] = None,
     ) -> list[TranscriptSegment]:
         """
         Transcribe audio file with word-level timestamps.
@@ -72,6 +75,7 @@ class TranscriptionEngine:
         Args:
             audio_path: Path to audio file (wav, mp3, etc.)
             language: Language code or None for auto-detection
+            progress_callback: Optional callback (stage, percent) for heartbeat updates
 
         Returns:
             List of transcript segments with word-level timing
@@ -86,16 +90,33 @@ class TranscriptionEngine:
 
         logger.info(f"Transcribing {audio_path.name}...")
 
-        segments, info = self._model.transcribe(
-            str(audio_path),
-            language=language,
-            word_timestamps=True,
-            vad_filter=True,  # Use VAD to filter out non-speech
-            vad_parameters=dict(
-                min_silence_duration_ms=500,
-                speech_pad_ms=200,
-            ),
-        )
+        # Heartbeat thread to report elapsed time during transcription
+        stop_heartbeat = threading.Event()
+        transcribe_start = time.time()
+
+        def _heartbeat():
+            while not stop_heartbeat.wait(5):
+                if progress_callback:
+                    elapsed = time.time() - transcribe_start
+                    progress_callback(f"Транскрибация... ({elapsed:.0f}с)", 0.25)
+
+        heartbeat = threading.Thread(target=_heartbeat, daemon=True)
+        heartbeat.start()
+
+        try:
+            segments, info = self._model.transcribe(
+                str(audio_path),
+                language=language,
+                word_timestamps=True,
+                vad_filter=True,  # Use VAD to filter out non-speech
+                vad_parameters=dict(
+                    min_silence_duration_ms=500,
+                    speech_pad_ms=200,
+                ),
+            )
+        except BaseException:
+            stop_heartbeat.set()
+            raise
 
         detected_language = info.language
         logger.info(f"Detected language: {detected_language} (probability: {info.language_probability:.2f})")
@@ -126,6 +147,9 @@ class TranscriptionEngine:
                 confidence=avg_confidence,
                 language=detected_language,
             ))
+
+        stop_heartbeat.set()
+        heartbeat.join(timeout=2)
 
         logger.info(f"Transcription complete: {len(result)} segments")
         return result
