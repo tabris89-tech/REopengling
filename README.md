@@ -1,5 +1,9 @@
 # REopengling
 
+![CI](https://github.com/tabris89-tech/REopengling/actions/workflows/ci.yml/badge.svg)
+![License](https://img.shields.io/github/license/tabris89-tech/REopengling)
+![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue)
+
 **AI Video Editor** — форк [OpenGling](https://github.com/poopstain112/opengling) с улучшениями.
 
 Автоматически удаляет тишину, слова-паразиты и неудачные дубли из видео.
