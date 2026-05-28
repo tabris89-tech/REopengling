@@ -61,7 +61,6 @@ class ProcessingRequest(BaseModel):
 
 class EditUpdate(BaseModel):
     """Request to update an edit decision."""
-    job_id: str
     edit_index: int
     keep: bool
 
@@ -124,6 +123,14 @@ async def upload_video(
 ):
     """Upload a video file for processing."""
     job_id = str(uuid.uuid4())
+    
+    # Check file size before reading into memory
+    MAX_UPLOAD_SIZE = 2 * 1024 * 1024 * 1024  # 2 GB
+    if file.size and file.size > MAX_UPLOAD_SIZE:
+        return JSONResponse(
+            status_code=413,
+            content={"detail": f"File too large. Maximum size is 2 GB, got {file.size / (1024*1024*1024):.1f} GB"}
+        )
     
     # Save uploaded file
     temp_dir = Path(tempfile.mkdtemp())
@@ -200,7 +207,7 @@ async def process_video_task(job_id: str, request: ProcessingRequest):
         input_path = Path(job["input_path"])
         
         # Run in thread pool with progress callback
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(
             None,
             lambda: processor.analyze_only(input_path, progress_callback)
@@ -507,7 +514,7 @@ async def export_video_task(job_id: str, format: str):
                 jobs[job_id]["stage"] = stage
                 jobs[job_id]["progress"] = int(percent * 100)
         
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         
         if export_format == ExportFormat.MP4:
             output_path = input_path.parent / f"{input_path.stem}_edited.mp4"
