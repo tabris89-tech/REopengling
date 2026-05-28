@@ -12,11 +12,16 @@
 
 ## ✨ Что нового (наши изменения)
 
+- **URL download** — yt-dlp (1700+ сайтов: YouTube, VK, RuTube, Yandex Disk, Google Drive), прямые ссылки `.mp4`/`.webm` и HTTP streaming
+- **Bootstrap** — авто-проверка FFmpeg, CUDA, spaCy, yt-dlp при запуске. Portable: ничего руками устанавливать не нужно
+- **Time range (HH:MM:SS)** — обработка только нужного отрезка видео (обрезается ДО анализа, экономит время)
+- **Whisper large-v3 по умолчанию** — максимальная точность распознавания
+- **Streaming upload 4GB** — загрузка больших файлов чанками по 8MB без OOM
+- **Веб-интерфейс: URL input** — вставь ссылку прямо в браузере (прогресс скачивания + авто-обработка)
 - **Прогресс-бар в реальном времени** — больше не висит на 0% при анализе
 - **Звук в экспортированном видео** — исправлена потеря аудиодорожки
 - **Экспорт в 10 раз быстрее** — без повторного запуска Whisper
 - **Всплывающие уведомления** — о завершении загрузки, анализа и экспорта
-- **Авто-скачивание** — готовый файл скачивается сам
 - **Устойчивость к ошибкам** — больше KeyError при перезапуске сервера
 
 ---
@@ -101,11 +106,20 @@ opengling serve
 # Полный цикл: тишина + паразиты + дубли
 opengling process video.mp4
 
+# Скачать из URL и сразу обработать
+opengling process --url https://youtube.com/watch?v=... --start 00:01:00 --end 00:05:00
+
 # С шумоподавлением и авто-зумом
 opengling process video.mp4 --noise --zoom
 
 # С экспортом субтитров
 opengling process video.mp4 --captions srt
+
+# Скачать видео из URL
+opengling download https://youtube.com/watch?v=...
+
+# Информация о видео по ссылке
+opengling inspect https://youtube.com/watch?v=...
 
 # Только расшифровка
 opengling transcribe video.mp4
@@ -149,7 +163,7 @@ config = ProcessingConfig(
     remove_fillers=True,
     detect_bad_takes=True,
     remove_noise=True,
-    whisper_model="base",
+    whisper_model="large-v3",
 )
 
 processor = VideoProcessor(config)
@@ -175,7 +189,7 @@ print(f"Дубли удалены: {result.bad_takes_removed}")
 | `noise_reduction_strength` | 0.5 | Интенсивность шумоподавления |
 | `auto_zoom` | False | Авто-зум по лицу |
 | `max_zoom` | 1.5 | Макс. увеличение |
-| `whisper_model` | "base" | Модель Whisper |
+| `whisper_model` | "large-v3" | Модель Whisper |
 | `language` | None | Язык (авто если None) |
 
 ### Модели Whisper
@@ -186,13 +200,14 @@ print(f"Дубли удалены: {result.bad_takes_removed}")
 | base | ⚡ | Хорошая | ~1 GB |
 | small | 🚶 | Лучше | ~2 GB |
 | medium | 🐢 | Отличная | ~5 GB |
-| large-v3 | 🐌 | Наилучшая | ~10 GB |
+| **large-v3** ⭐ | 🐌 | **Наилучшая** | ~10 GB |
 
 ---
 
 ## 🛠 Технологии
 
 - **[faster-whisper](https://github.com/SYSTRAN/faster-whisper)** — распознавание речи
+- **[yt-dlp](https://github.com/yt-dlp/yt-dlp)** — скачивание видео из 1700+ сайтов
 - **[FFmpeg](https://ffmpeg.org/)** — обработка видео/аудио
 - **[MoviePy](https://github.com/Zulko/moviepy)** — видеомонтаж
 - **[WebRTC VAD](https://github.com/wiseman/py-webrtcvad)** — детекция речи
@@ -201,6 +216,23 @@ print(f"Дубли удалены: {result.bad_takes_removed}")
 - **[noisereduce](https://github.com/timsainb/noisereduce)** — шумоподавление
 - **[Ollama](https://ollama.ai/)** — локальный LLM
 - **[MCP](https://modelcontextprotocol.io/)** — Model Context Protocol
+
+---
+
+## 🗺️ Roadmap
+
+- ✅ URL download (yt-dlp, 1700+ сайтов)
+- ✅ Bootstrap: авто-установка FFmpeg, проверка CUDA/spaCy
+- ✅ Time range (HH:MM:SS — обрезание до обработки)
+- ✅ Whisper large-v3 по умолчанию
+- ✅ 4GB streaming upload
+- ✅ Веб-интерфейс: URL input + прогресс
+- ⬜ Пакетный режим (batch processing нескольких файлов)
+- ⬜ Темы оформления (тёмная/светлая)
+- ⬜ drag & drop в веб-интерфейсе
+- ⬜ Интеграция с Telegram ботом
+- ⬜ Экспорт в Google Docs / Notion
+- ⬜ Нативная Windows сборка (pyinstaller)
 
 ---
 
