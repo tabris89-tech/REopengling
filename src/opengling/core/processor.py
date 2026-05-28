@@ -88,11 +88,17 @@ class VideoProcessor:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             
+            # Step 0: Trim video to time range (if specified)
+            working_path = input_path
+            if self.config.start_time is not None or self.config.end_time is not None:
+                self._report_progress(progress_callback, "Trimming to time range", 0.02)
+                working_path = self._trim_video(input_path, temp_path)
+            
             # Step 1: Extract audio
             self._report_progress(progress_callback, "Extracting audio", 0.05)
-            audio_path = self._extract_audio(input_path, temp_path)
-            output_audio_path = self._extract_output_audio(input_path, temp_path)
-            result.original_duration = self._get_duration(input_path)
+            audio_path = self._extract_audio(working_path, temp_path)
+            output_audio_path = self._extract_output_audio(working_path, temp_path)
+            result.original_duration = self._get_duration(working_path)
             
             # Step 2: Apply noise removal (if enabled)
             if self.config.remove_noise:
@@ -158,7 +164,7 @@ class VideoProcessor:
             if self.config.output_format == ExportFormat.MP4:
                 # Render final video
                 self._render_video(
-                    input_path,
+                    working_path,
                     result.output_path,
                     result.edit_decisions,
                     result.zoom_keyframes,
@@ -172,7 +178,7 @@ class VideoProcessor:
                     result.output_path,
                     self.config.output_format,
                     result.original_duration,
-                    str(input_path),
+                    str(working_path),
                 )
             
             # Calculate edited duration and keep regions
@@ -206,6 +212,39 @@ class VideoProcessor:
         )
         
         return result
+    
+    def _trim_video(self, video_path: Path, temp_dir: Path) -> Path:
+        """Trim video to the time range specified in config."""
+        try:
+            import ffmpeg
+        except ImportError:
+            raise ImportError("ffmpeg-python is required")
+        
+        start = self.config.start_time or 0.0
+        end = self.config.end_time
+        
+        trimmed_path = temp_dir / f"trimmed{video_path.suffix}"
+        
+        try:
+            input_kwargs = {"ss": start}
+            if end is not None:
+                input_kwargs["to"] = end
+            
+            (
+                ffmpeg
+                .input(str(video_path), **input_kwargs)
+                .output(
+                    str(trimmed_path),
+                    c="copy",
+                )
+                .overwrite_output()
+                .run(quiet=True)
+            )
+        except ffmpeg.Error as e:
+            logger.error(f"FFmpeg error trimming video: {e}")
+            raise
+        
+        return trimmed_path
     
     def _extract_audio(self, video_path: Path, temp_dir: Path) -> Path:
         """Extract audio from video file."""
@@ -324,10 +363,16 @@ class VideoProcessor:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             
+            # Trim to time range (if specified)
+            working_path = input_path
+            if self.config.start_time is not None or self.config.end_time is not None:
+                self._report_progress(progress_callback, "Trimming to time range", 0.02)
+                working_path = self._trim_video(input_path, temp_path)
+            
             # Extract and analyze
             self._report_progress(progress_callback, "Extracting audio", 0.05)
-            audio_path = self._extract_audio(input_path, temp_path)
-            result.original_duration = self._get_duration(input_path)
+            audio_path = self._extract_audio(working_path, temp_path)
+            result.original_duration = self._get_duration(working_path)
             
             # Transcribe
             self._report_progress(progress_callback, "Transcribing", 0.25)

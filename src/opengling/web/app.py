@@ -19,7 +19,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
-from opengling.core.models import ProcessingConfig, ExportFormat, EditDecision, EditType
+from opengling.core.models import (
+    ProcessingConfig, ExportFormat, EditDecision, EditType,
+    parse_time_to_seconds, validate_time_range,
+)
 from opengling.core.processor import VideoProcessor
 
 logger = logging.getLogger(__name__)
@@ -55,8 +58,10 @@ class ProcessingRequest(BaseModel):
     remove_bad_takes: bool = True
     remove_noise: bool = False
     auto_zoom: bool = False
-    whisper_model: str = "base"
+    whisper_model: str = "large-v3"
     silence_threshold: float = 0.5
+    start_time: Optional[str] = None  # HH:MM:SS or MM:SS
+    end_time: Optional[str] = None  # HH:MM:SS or MM:SS
 
 
 class EditUpdate(BaseModel):
@@ -94,6 +99,17 @@ def cleanup_old_jobs():
 # Start cleanup thread
 cleanup_thread = threading.Thread(target=cleanup_old_jobs, daemon=True)
 cleanup_thread.start()
+
+
+@app.on_event("startup")
+async def startup_event():
+    """Check dependencies on startup."""
+    from opengling.core.bootstrap import check_all, print_startup_info
+    issues = check_all(auto_install=True)
+    if issues:
+        print_startup_info(issues)
+        if any(i.critical for i in issues):
+            logger.warning("Critical dependencies missing. Some features may not work.")
 
 
 def cleanup_on_shutdown():
@@ -174,12 +190,36 @@ async def start_processing(
         job["status"] = "processing"
         job["progress"] = 0
     
-    background_tasks.add_task(process_video_task, job_id, request)
+    # Parse and validate time range
+    start_time_sec = None
+    end_time_sec = None
+    if request.start_time or request.end_time:
+        try:
+            if request.start_time:
+                start_time_sec = parse_time_to_seconds(request.start_time)
+            if request.end_time:
+                end_time_sec = parse_time_to_seconds(request.end_time)
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+        
+        # Get video duration for validation
+        try:
+            import ffmpeg
+            probe = ffmpeg.probe(job["input_path"])
+            video_duration = float(probe['format']['duration'])
+        except Exception:
+            video_duration = 0.0
+        
+        errors = validate_time_range(start_time_sec, end_time_sec, video_duration)
+        if errors:
+            raise HTTPException(status_code=422, detail="; ".join(errors))
+    
+    background_tasks.add_task(process_video_task, job_id, request, start_time_sec, end_time_sec)
     
     return {"status": "processing", "job_id": job_id}
 
 
-async def process_video_task(job_id: str, request: ProcessingRequest):
+async def process_video_task(job_id: str, request: ProcessingRequest, start_time_sec: Optional[float] = None, end_time_sec: Optional[float] = None):
     """Background task to process video."""
     with jobs_lock:
         job = jobs[job_id]
@@ -193,6 +233,8 @@ async def process_video_task(job_id: str, request: ProcessingRequest):
             auto_zoom=request.auto_zoom,
             whisper_model=request.whisper_model,
             silence_threshold=request.silence_threshold,
+            start_time=start_time_sec,
+            end_time=end_time_sec,
         )
         
         processor = VideoProcessor(config)
@@ -930,6 +972,24 @@ def get_index_html() -> HTMLResponse:
                 <h2 class="text-3xl font-bold mb-3">Upload Your Video</h2>
                 <p class="text-gray-400 mb-8">AI will remove silences, filler words, and bad takes</p>
                 
+                <!-- Time range inputs -->
+                <div class="flex gap-4 mb-6 justify-center">
+                    <div class="flex flex-col items-center">
+                        <label class="text-xs text-gray-500 mb-1">Start (HH:MM:SS)</label>
+                        <input type="text" x-model="startTime" placeholder="00:00:00"
+                               class="w-32 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-center text-sm text-gray-200 focus:border-purple-500 focus:outline-none mono"
+                               pattern="\d{1,2}:\d{2}:\d{2}">
+                    </div>
+                    <div class="flex flex-col items-center">
+                        <label class="text-xs text-gray-500 mb-1">End (HH:MM:SS)</label>
+                        <input type="text" x-model="endTime" placeholder="end"
+                               class="w-32 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-center text-sm text-gray-200 focus:border-purple-500 focus:outline-none mono"
+                               pattern="\d{1,2}:\d{2}:\d{2}">
+                    </div>
+                </div>
+                <p x-show="timeError" class="text-red-400 text-sm mb-4" x-text="timeError"></p>
+                <p class="text-xs text-gray-600 mb-6">Leave empty to process entire video</p>
+                
                 <label class="block">
                     <input type="file" accept="video/*,audio/*" @change="uploadFile($event)" class="hidden">
                     <div class="btn-primary text-white font-semibold py-4 px-10 rounded-xl cursor-pointer inline-flex items-center gap-2 text-lg">
@@ -1147,6 +1207,9 @@ def get_index_html() -> HTMLResponse:
                 player: null,
                 notifications: [],
                 notificationCounter: 0,
+                startTime: '',
+                endTime: '',
+                timeError: '',
 
                 addNotification(type, message) {
                     const id = ++this.notificationCounter;
@@ -1172,9 +1235,50 @@ def get_index_html() -> HTMLResponse:
                     return `${mins}:${secs.toString().padStart(2, '0')}`;
                 },
 
+                validateTimeInputs() {
+                    this.timeError = '';
+                    if (!this.startTime && !this.endTime) return true;
+                    
+                    const timeRegex = /^(\d{1,2}):(\d{2}):(\d{2})$/;
+                    const mmssRegex = /^(\d{1,2}):(\d{2})$/;
+                    
+                    const parseTime = (str) => {
+                        let match = timeRegex.exec(str);
+                        if (match) return parseInt(match[1])*3600 + parseInt(match[2])*60 + parseInt(match[3]);
+                        match = mmssRegex.exec(str);
+                        if (match) return parseInt(match[1])*60 + parseInt(match[2]);
+                        return NaN;
+                    };
+                    
+                    if (this.startTime && !timeRegex.test(this.startTime) && !mmssRegex.test(this.startTime)) {
+                        this.timeError = 'Invalid start time format. Use HH:MM:SS or MM:SS';
+                        return false;
+                    }
+                    if (this.endTime && !timeRegex.test(this.endTime) && !mmssRegex.test(this.endTime)) {
+                        this.timeError = 'Invalid end time format. Use HH:MM:SS or MM:SS';
+                        return false;
+                    }
+                    
+                    if (this.startTime && this.endTime) {
+                        const s = parseTime(this.startTime);
+                        const e = parseTime(this.endTime);
+                        if (s >= e) {
+                            this.timeError = 'Start time must be before end time';
+                            return false;
+                        }
+                        if (e - s < 10) {
+                            this.timeError = 'Time range must be at least 10 seconds';
+                            return false;
+                        }
+                    }
+                    return true;
+                },
+
                 async uploadFile(event) {
                     const file = event.target.files[0];
                     if (!file) return;
+                    
+                    if (!this.validateTimeInputs()) return;
 
                     this.filename = file.name;
 
@@ -1198,17 +1302,21 @@ def get_index_html() -> HTMLResponse:
 
                 async startProcessing() {
                     try {
+                        const body = {
+                            remove_silences: true,
+                            remove_fillers: true,
+                            remove_bad_takes: true,
+                            remove_noise: false,
+                            auto_zoom: false,
+                            whisper_model: 'large-v3'
+                        };
+                        if (this.startTime) body.start_time = this.startTime;
+                        if (this.endTime) body.end_time = this.endTime;
+                        
                         await fetch(`/api/process/${this.jobId}`, {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                                remove_silences: true,
-                                remove_fillers: true,
-                                remove_bad_takes: true,
-                                remove_noise: false,
-                                auto_zoom: false,
-                                whisper_model: 'base'
-                            })
+                            body: JSON.stringify(body)
                         });
                         
                         this.status = 'processing';

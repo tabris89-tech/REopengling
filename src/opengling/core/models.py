@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -110,8 +111,12 @@ class ProcessingConfig:
     max_zoom: float = 1.5
     
     # Transcription
-    whisper_model: str = "base"  # tiny, base, small, medium, large-v3
+    whisper_model: str = "large-v3"  # tiny, base, small, medium, large-v3
     language: Optional[str] = None  # Auto-detect if None
+    
+    # Time range (optional, None = process entire file)
+    start_time: Optional[float] = None  # seconds - start of range to process
+    end_time: Optional[float] = None  # seconds - end of range to process
     
     # YouTube generation
     generate_youtube_metadata: bool = False
@@ -171,4 +176,96 @@ class ProcessingResult:
         if self.original_duration == 0:
             return 0.0
         return (self.time_saved / self.original_duration) * 100
+
+
+# --- Time parsing utilities ---
+
+_TIME_PATTERN = re.compile(r"^(\d{1,2}):(\d{2}):(\d{2})$")
+
+
+def parse_time_to_seconds(time_str: str) -> float:
+    """
+    Parse HH:MM:SS string to seconds.
+
+    Args:
+        time_str: Time string in format HH:MM:SS or MM:SS
+
+    Returns:
+        Time in seconds
+
+    Raises:
+        ValueError: If format is invalid
+    """
+    time_str = time_str.strip()
+
+    # Try HH:MM:SS
+    match = _TIME_PATTERN.match(time_str)
+    if match:
+        hours, minutes, seconds = int(match.group(1)), int(match.group(2)), int(match.group(3))
+        return hours * 3600 + minutes * 60 + seconds
+
+    # Try MM:SS
+    parts = time_str.split(":")
+    if len(parts) == 2:
+        try:
+            minutes, seconds = int(parts[0]), int(parts[1])
+            return minutes * 60 + seconds
+        except ValueError:
+            pass
+
+    # Try plain seconds
+    try:
+        return float(time_str)
+    except ValueError:
+        raise ValueError(
+            f"Invalid time format: '{time_str}'. "
+            f"Use HH:MM:SS, MM:SS, or seconds."
+        )
+
+
+def format_seconds_to_time(seconds: float) -> str:
+    """Format seconds to HH:MM:SS string."""
+    total = int(seconds)
+    hours = total // 3600
+    minutes = (total % 3600) // 60
+    secs = total % 60
+    if hours > 0:
+        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+    return f"{minutes:02d}:{secs:02d}"
+
+
+def validate_time_range(
+    start_time: Optional[float],
+    end_time: Optional[float],
+    video_duration: float,
+) -> list[str]:
+    """
+    Validate time range parameters.
+
+    Returns list of error messages (empty if valid).
+    """
+    errors = []
+
+    if start_time is not None and start_time < 0:
+        errors.append("Start time cannot be negative.")
+
+    if end_time is not None and end_time < 0:
+        errors.append("End time cannot be negative.")
+
+    if start_time is not None and end_time is not None:
+        if start_time >= end_time:
+            errors.append("Start time must be before end time.")
+
+        if end_time - start_time < 10:
+            errors.append("Time range must be at least 10 seconds.")
+
+        if end_time - start_time > 8 * 3600:
+            errors.append("Time range cannot exceed 8 hours.")
+
+    if end_time is not None and video_duration > 0 and end_time > video_duration:
+        from opengling.core.models import format_seconds_to_time
+        dur_str = format_seconds_to_time(video_duration)
+        errors.append(f"End time exceeds video duration ({dur_str}).")
+
+    return errors
 

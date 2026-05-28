@@ -14,7 +14,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeEl
 from rich.table import Table
 from rich.panel import Panel
 
-from opengling.core.models import ProcessingConfig, ExportFormat
+from opengling.core.models import ProcessingConfig, ExportFormat, parse_time_to_seconds
 
 app = typer.Typer(
     name="opengling",
@@ -26,7 +26,7 @@ console = Console()
 
 
 def load_config_with_file(
-    model: str = "base",
+    model: str = "large-v3",
     language: Optional[str] = None,
     silence_threshold: float = 0.5,
     no_silence: bool = False,
@@ -34,6 +34,8 @@ def load_config_with_file(
     no_bad_takes: bool = False,
     noise_removal: bool = False,
     auto_zoom: bool = False,
+    start_time: Optional[float] = None,
+    end_time: Optional[float] = None,
 ) -> ProcessingConfig:
     """Load config from file and merge with CLI options."""
     from opengling.core.config_file import load_config
@@ -53,10 +55,12 @@ def load_config_with_file(
         noise_reduction_strength=base_config.noise_reduction_strength,
         auto_zoom=auto_zoom or base_config.auto_zoom,
         max_zoom=base_config.max_zoom,
-        whisper_model=model if model != "base" else base_config.whisper_model,
+        whisper_model=model if model != "large-v3" else base_config.whisper_model,
         language=language or base_config.language,
         device=base_config.device,
         compute_type=base_config.compute_type,
+        start_time=start_time,
+        end_time=end_time,
     )
 
 
@@ -87,8 +91,12 @@ def process(
     youtube: bool = typer.Option(False, "--youtube", "-y", help="Generate YouTube metadata"),
     
     # Model settings
-    model: str = typer.Option("base", "--model", "-m", help="Whisper model: tiny, base, small, medium, large-v3"),
+    model: str = typer.Option("large-v3", "--model", "-m", help="Whisper model: tiny, base, small, medium, large-v3"),
     language: Optional[str] = typer.Option(None, "--language", "-l", help="Language code (auto-detect if not set)"),
+    
+    # Time range
+    start: Optional[str] = typer.Option(None, "--start", help="Start time (HH:MM:SS or MM:SS)"),
+    end: Optional[str] = typer.Option(None, "--end", help="End time (HH:MM:SS or MM:SS)"),
     
     # Thresholds
     silence_threshold: float = typer.Option(0.5, "--silence-threshold", help="Minimum silence duration to remove (seconds)"),
@@ -117,6 +125,13 @@ def process(
         console.print(f"[red]Error: File not found: {input_path}[/red]")
         raise typer.Exit(1)
     
+    # Check dependencies
+    from opengling.core.bootstrap import check_all, print_startup_info
+    issues = check_all(auto_install=True)
+    if any(i.critical for i in issues):
+        print_startup_info(issues)
+        raise typer.Exit(1)
+    
     # Map format string to enum
     format_map = {
         "mp4": ExportFormat.MP4,
@@ -138,6 +153,22 @@ def process(
             raise typer.Exit(1)
         caption_format = caption_map[captions]
     
+    # Parse time range
+    start_time = None
+    end_time = None
+    if start:
+        try:
+            start_time = parse_time_to_seconds(start)
+        except ValueError as e:
+            console.print(f"[red]Error: {e}[/red]")
+            raise typer.Exit(1)
+    if end:
+        try:
+            end_time = parse_time_to_seconds(end)
+        except ValueError as e:
+            console.print(f"[red]Error: {e}[/red]")
+            raise typer.Exit(1)
+    
     # Build config - load from file and merge with CLI options
     config = load_config_with_file(
         model=model,
@@ -148,6 +179,8 @@ def process(
         no_bad_takes=no_bad_takes,
         noise_removal=noise_removal,
         auto_zoom=auto_zoom,
+        start_time=start_time,
+        end_time=end_time,
     )
     # Override with format-specific options
     config.output_format = format_map[format]
@@ -155,9 +188,16 @@ def process(
     config.generate_youtube_metadata = youtube
     
     # Show what we're doing
+    time_range_str = ""
+    if start_time is not None or end_time is not None:
+        from opengling.core.models import format_seconds_to_time
+        s = format_seconds_to_time(start_time or 0)
+        e = format_seconds_to_time(end_time) if end_time else "end"
+        time_range_str = f"\nTime range: [yellow]{s} → {e}[/yellow]"
+    
     console.print(Panel.fit(
         f"[bold cyan]OpenGling[/bold cyan]\n"
-        f"Processing: [yellow]{input_path.name}[/yellow]",
+        f"Processing: [yellow]{input_path.name}[/yellow]{time_range_str}",
         title="🎬 Video Editor",
     ))
     
@@ -216,7 +256,7 @@ def transcribe(
     input_path: Path = typer.Argument(..., help="Path to video/audio file"),
     output: Optional[Path] = typer.Option(None, "--output", "-o", help="Output text file"),
     format: str = typer.Option("txt", "--format", "-f", help="Output format: txt, json, srt, vtt"),
-    model: str = typer.Option("base", "--model", "-m", help="Whisper model size"),
+    model: str = typer.Option("large-v3", "--model", "-m", help="Whisper model size"),
     language: Optional[str] = typer.Option(None, "--language", "-l", help="Language code"),
 ):
     """
@@ -351,6 +391,13 @@ def serve(
     """
     Start the OpenGling web server for the review UI.
     """
+    # Check dependencies
+    from opengling.core.bootstrap import check_all, print_startup_info
+    issues = check_all(auto_install=True)
+    if any(i.critical for i in issues):
+        print_startup_info(issues)
+        raise typer.Exit(1)
+    
     console.print(f"[cyan]Starting OpenGling Web Server...[/cyan]")
     console.print(f"[green]→[/green] http://{host}:{port}")
     
@@ -377,7 +424,7 @@ def batch(
     output_dir: Optional[Path] = typer.Option(None, "--output-dir", "-o", help="Output directory"),
     parallel: int = typer.Option(1, "--parallel", "-p", help="Number of parallel jobs"),
     format: str = typer.Option("mp4", "--format", "-f", help="Output format"),
-    model: str = typer.Option("base", "--model", "-m", help="Whisper model size"),
+    model: str = typer.Option("large-v3", "--model", "-m", help="Whisper model size"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose output"),
 ):
     """
@@ -506,7 +553,7 @@ def batch(
 def save_project(
     input_path: Path = typer.Argument(..., help="Path to video file"),
     output: Optional[Path] = typer.Option(None, "--output", "-o", help="Project file output path"),
-    model: str = typer.Option("base", "--model", "-m", help="Whisper model size"),
+    model: str = typer.Option("large-v3", "--model", "-m", help="Whisper model size"),
 ):
     """
     Analyze a video and save the project for later editing.

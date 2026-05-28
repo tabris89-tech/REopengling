@@ -95,7 +95,7 @@ class TestProcessingConfig:
         assert config.detect_bad_takes is True
         assert config.remove_noise is False
         assert config.auto_zoom is False
-        assert config.whisper_model == "base"
+        assert config.whisper_model == "large-v3"
     
     def test_custom_values(self):
         from opengling.core.models import ProcessingConfig
