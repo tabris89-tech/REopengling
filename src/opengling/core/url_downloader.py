@@ -32,8 +32,9 @@ MEDIA_EXTENSIONS = frozenset({
 })
 
 # Progress line regex: [download]  45.2% of ~150.00MiB at  2.50MiB/s ETA 00:33
+# ETA absent on early lines: [download]   0.0% of ~150.00MiB
 PROGRESS_RE = re.compile(
-    r'\[download\]\s+(\d+\.?\d*)%.*?ETA\s+(\S+)'
+    r'\[download\]\s+(\d+\.?\d*)%(?:.*?ETA\s+(\S+))?'
 )
 DEST_RE = re.compile(r'\[download\]\s+Destination:\s+(.+)')
 MERGER_RE = re.compile(r'\[Merger\]\s+Merging formats into\s+"(.+)"')
@@ -429,7 +430,10 @@ def download_video(
         if match and progress_callback:
             percent = float(match.group(1))
             eta = match.group(2)
-            progress_callback(percent / 100.0, f"Скачивание... {eta} осталось")
+            if eta:
+                progress_callback(percent / 100.0, f"Скачивание... {eta} осталось")
+            else:
+                progress_callback(percent / 100.0, f"Скачивание... {percent:.0f}%")
 
         for regex in [DEST_RE, MERGER_RE, EXTRACT_RE]:
             m = regex.search(line)
@@ -572,7 +576,10 @@ def download_playlist(
         if match and progress_callback:
             percent = float(match.group(1))
             eta = match.group(2)
-            progress_callback(percent / 100.0, f"Скачивание плейлиста... {eta} осталось")
+            if eta:
+                progress_callback(percent / 100.0, f"Скачивание плейлиста... {eta} осталось")
+            else:
+                progress_callback(percent / 100.0, f"Скачивание плейлиста... {percent:.0f}%")
         if "ERROR:" in line:
             logger.error(f"Playlist download error: {line}")
 

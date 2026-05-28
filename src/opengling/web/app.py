@@ -1367,6 +1367,7 @@ def get_index_html() -> HTMLResponse:
                 isDownloading: false,
                 isProcessing: false,
                 urlError: '',
+                processingFailed: false,
 
                 addNotification(type, message) {
                     const id = ++this.notificationCounter;
@@ -1527,6 +1528,8 @@ def get_index_html() -> HTMLResponse:
                         }
                     } catch (error) {
                         console.error('Processing error:', error);
+                        this.processingFailed = true;
+                        this.addNotification('error', 'Ошибка запуска обработки: ' + error.message);
                     } finally {
                         this.isProcessing = false;
                     }
@@ -1551,6 +1554,7 @@ def get_index_html() -> HTMLResponse:
                             }
 
                             if (data.status === 'uploaded') {
+                                if (this.processingFailed) return;
                                 this.isDownloading = false;
                                 this.addNotification('success', 'Скачивание завершено');
                                 await this.startProcessing();
