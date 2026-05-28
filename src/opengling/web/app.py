@@ -12,6 +12,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 
 import numpy as np
 from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile
@@ -207,6 +208,10 @@ async def download_from_url(
 
     if not url.startswith(("http://", "https://")):
         raise HTTPException(status_code=422, detail="URL должен начинаться с http:// или https://")
+
+    parsed = urlparse(url)
+    if not parsed.netloc or "." not in parsed.netloc:
+        raise HTTPException(status_code=422, detail="Некорректный URL: не указан домен")
 
     job_id = str(uuid.uuid4())
     temp_dir = Path(tempfile.mkdtemp())
@@ -1466,6 +1471,18 @@ def get_index_html() -> HTMLResponse:
 
                     if (!url.startsWith('http://') && !url.startsWith('https://')) {
                         this.urlError = 'URL должен начинаться с http:// или https://';
+                        return;
+                    }
+
+                    // Basic domain check
+                    try {
+                        const parsed = new URL(url);
+                        if (!parsed.hostname.includes('.')) {
+                            this.urlError = 'Некорректный URL: не указан домен';
+                            return;
+                        }
+                    } catch {
+                        this.urlError = 'Некорректный URL';
                         return;
                     }
                     this.urlError = '';

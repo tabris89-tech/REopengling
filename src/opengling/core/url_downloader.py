@@ -426,7 +426,14 @@ def download_video(
         raise RuntimeError("yt-dlp не найден. Установите: pip install yt-dlp")
 
     downloaded_path: Optional[Path] = None
-    line_timeout = 60  # kill if no stderr output for 60s
+
+    # Track timeouts and progress
+    line_timeout = 60           # kill if no stderr output for 60s
+    extraction_timeout = 180    # kill if no [download]% lines after 180s
+    process_start_time = time.time()
+    last_line_time = time.time()
+    last_stage_update = 0.0
+    has_download_progress = False
 
     # Thread to read stderr lines into a queue
     stderr_q: queue.Queue[Optional[str]] = queue.Queue()
@@ -445,28 +452,55 @@ def download_video(
     try:
         while True:
             try:
-                line = stderr_q.get(timeout=line_timeout)
+                line = stderr_q.get(timeout=1)
             except queue.Empty:
-                process.kill()
-                process.wait()
-                raise RuntimeError(
-                    f"Таймаут скачивания: нет данных от yt-dlp в течение {line_timeout}с"
-                )
+                now = time.time()
+                # Line-level timeout — yt-dlp stopped producing any output
+                if now - last_line_time >= line_timeout:
+                    process.kill()
+                    process.wait()
+                    raise RuntimeError(
+                        f"Таймаут скачивания: нет данных от yt-dlp в течение {line_timeout}с"
+                    )
+                # Extraction timeout — yt-dlp is outputting lines but never starts download
+                if not has_download_progress and now - process_start_time >= extraction_timeout:
+                    process.kill()
+                    process.wait()
+                    raise RuntimeError(
+                        f"Таймаут: yt-dlp не начал скачивание в течение {extraction_timeout}с"
+                    )
+                # Still alive — update stage with elapsed time every 5s
+                if progress_callback and now - last_stage_update >= 5:
+                    last_stage_update = now
+                    elapsed = now - process_start_time
+                    progress_callback(0, f"Подключаюсь к источнику... ({elapsed:.0f}с)")
+                continue
 
             if line is None:
                 break  # EOF
 
+            last_line_time = time.time()
             line = line.strip()
             logger.debug(f"yt-dlp: {line}")
 
             match = PROGRESS_RE.search(line)
             if match and progress_callback:
+                has_download_progress = True
                 percent = float(match.group(1))
                 eta = match.group(2)
                 if eta:
                     progress_callback(percent / 100.0, f"Скачивание... {eta} осталось")
                 else:
                     progress_callback(percent / 100.0, f"Скачивание... {percent:.0f}%")
+                last_stage_update = time.time()
+            elif progress_callback:
+                # Non-progress line — show what yt-dlp is doing (throttled)
+                clean = re.sub(r'\x1b\[[0-9;]*m', '', line)
+                now = time.time()
+                if clean and now - last_stage_update >= 2:
+                    last_stage_update = now
+                    elapsed = now - process_start_time
+                    progress_callback(0, f"{clean} ({elapsed:.0f}с)")
 
             for regex in [DEST_RE, MERGER_RE, EXTRACT_RE]:
                 m = regex.search(line)
@@ -613,6 +647,11 @@ def download_playlist(
     )
 
     line_timeout = 60
+    extraction_timeout = 180
+    process_start_time = time.time()
+    last_line_time = time.time()
+    last_stage_update = 0.0
+    has_download_progress = False
     stderr_q: queue.Queue[Optional[str]] = queue.Queue()
 
     def _reader():
@@ -629,26 +668,50 @@ def download_playlist(
     try:
         while True:
             try:
-                line = stderr_q.get(timeout=line_timeout)
+                line = stderr_q.get(timeout=1)
             except queue.Empty:
-                process.kill()
-                process.wait()
-                raise RuntimeError(
-                    f"Таймаут скачивания: нет данных от yt-dlp в течение {line_timeout}с"
-                )
+                now = time.time()
+                if now - last_line_time >= line_timeout:
+                    process.kill()
+                    process.wait()
+                    raise RuntimeError(
+                        f"Таймаут скачивания: нет данных от yt-dlp в течение {line_timeout}с"
+                    )
+                if not has_download_progress and now - process_start_time >= extraction_timeout:
+                    process.kill()
+                    process.wait()
+                    raise RuntimeError(
+                        f"Таймаут: yt-dlp не начал скачивание в течение {extraction_timeout}с"
+                    )
+                if progress_callback and now - last_stage_update >= 5:
+                    last_stage_update = now
+                    elapsed = now - process_start_time
+                    progress_callback(0, f"Подключаюсь к источнику... ({elapsed:.0f}с)")
+                continue
 
             if line is None:
                 break
 
+            last_line_time = time.time()
             line = line.strip()
+
             match = PROGRESS_RE.search(line)
             if match and progress_callback:
+                has_download_progress = True
                 percent = float(match.group(1))
                 eta = match.group(2)
                 if eta:
                     progress_callback(percent / 100.0, f"Скачивание плейлиста... {eta} осталось")
                 else:
                     progress_callback(percent / 100.0, f"Скачивание плейлиста... {percent:.0f}%")
+                last_stage_update = time.time()
+            elif progress_callback:
+                clean = re.sub(r'\x1b\[[0-9;]*m', '', line)
+                now = time.time()
+                if clean and now - last_stage_update >= 2:
+                    last_stage_update = now
+                    elapsed = now - process_start_time
+                    progress_callback(0, f"{clean} ({elapsed:.0f}с)")
             if "ERROR:" in line:
                 logger.error(f"Playlist download error: {line}")
 
