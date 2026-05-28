@@ -5,17 +5,17 @@ from __future__ import annotations
 import asyncio
 import logging
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import (
-    Tool,
-    TextContent,
     CallToolResult,
+    TextContent,
+    Tool,
 )
 
-from opengling.core.models import ProcessingConfig, ExportFormat
+from opengling.core.models import ExportFormat, ProcessingConfig
 from opengling.core.processor import VideoProcessor
 
 logger = logging.getLogger(__name__)
@@ -34,7 +34,7 @@ TOOLS = [
     Tool(
         name="process_video",
         description="""Process a video file to automatically remove silences, filler words, and bad takes.
-        
+
 This is the main tool for editing videos. It will:
 1. Transcribe the audio using AI (Whisper)
 2. Detect and remove silent pauses
@@ -100,7 +100,7 @@ Returns the path to the edited video and statistics about what was removed.""",
     Tool(
         name="transcribe",
         description="""Transcribe a video or audio file to text with word-level timestamps.
-        
+
 Uses OpenAI's Whisper model for accurate speech recognition.
 Returns the full transcript and individual segments with timing information.""",
         inputSchema={
@@ -127,7 +127,7 @@ Returns the full transcript and individual segments with timing information.""",
     Tool(
         name="analyze_video",
         description="""Analyze a video without making any edits.
-        
+
 This tool will analyze the video and return information about:
 - Detected silences and their durations
 - Detected filler words and their locations
@@ -150,7 +150,7 @@ Useful for previewing what edits would be made before processing.""",
     Tool(
         name="generate_captions",
         description="""Generate captions/subtitles for a video file.
-        
+
 Transcribes the video and exports captions in SRT or VTT format.
 These can be used for YouTube closed captions or burned into the video.""",
         inputSchema={
@@ -177,7 +177,7 @@ These can be used for YouTube closed captions or burned into the video.""",
     Tool(
         name="generate_youtube_metadata",
         description="""Generate YouTube-optimized metadata from a video.
-        
+
 Uses AI to analyze the transcript and generate:
 - Engaging video title
 - SEO-optimized description
@@ -208,7 +208,7 @@ Requires Ollama to be running locally with a language model.""",
     Tool(
         name="export_timeline",
         description="""Export edit decisions to a professional video editor timeline format.
-        
+
 Supports:
 - FCPXML for Final Cut Pro
 - XML for Adobe Premiere Pro
@@ -265,7 +265,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> CallToolResult:
                 content=[TextContent(type="text", text=f"Unknown tool: {name}")],
                 isError=True,
             )
-        
+
         return CallToolResult(
             content=[TextContent(type="text", text=result)],
             isError=False,
@@ -282,7 +282,7 @@ async def handle_process_video(args: dict[str, Any]) -> str:
     """Handle process_video tool call."""
     input_path = Path(args["input_path"])
     output_path = args.get("output_path")
-    
+
     # Build config from arguments
     format_map = {
         "mp4": ExportFormat.MP4,
@@ -290,7 +290,7 @@ async def handle_process_video(args: dict[str, Any]) -> str:
         "premiere_xml": ExportFormat.PREMIERE_XML,
         "davinci_edl": ExportFormat.DAVINCI_EDL,
     }
-    
+
     config = ProcessingConfig(
         remove_silences=args.get("remove_silences", True),
         remove_fillers=args.get("remove_fillers", True),
@@ -300,16 +300,16 @@ async def handle_process_video(args: dict[str, Any]) -> str:
         output_format=format_map.get(args.get("output_format", "mp4"), ExportFormat.MP4),
         whisper_model=args.get("whisper_model", "base"),
     )
-    
+
     # Process video in thread pool (CPU-bound)
     loop = asyncio.get_event_loop()
     processor = VideoProcessor(config)
-    
+
     result = await loop.run_in_executor(
         None,
         lambda: processor.process(input_path, output_path)
     )
-    
+
     # Format response
     response = f"""Video processed successfully!
 
@@ -325,66 +325,66 @@ async def handle_process_video(args: dict[str, Any]) -> str:
 - Filler words removed: {result.fillers_removed}
 - Bad takes removed: {result.bad_takes_removed}
 """
-    
+
     if result.youtube_metadata:
         response += f"""
 **Generated YouTube Metadata:**
 - Title: {result.youtube_metadata.title}
 - Tags: {', '.join(result.youtube_metadata.tags[:5])}
 """
-    
+
     return response
 
 
 async def handle_transcribe(args: dict[str, Any]) -> str:
     """Handle transcribe tool call."""
     input_path = Path(args["input_path"])
-    
+
     config = ProcessingConfig(
         whisper_model=args.get("whisper_model", "base"),
         language=args.get("language"),
     )
-    
+
     processor = VideoProcessor(config)
-    
+
     loop = asyncio.get_event_loop()
     segments = await loop.run_in_executor(
         None,
         lambda: processor.transcribe_only(input_path)
     )
-    
+
     # Format transcript
     full_text = " ".join(seg.text for seg in segments)
-    
+
     response = f"""**Transcript:**
 
 {full_text}
 
 **Segments ({len(segments)}):**
 """
-    
+
     for i, seg in enumerate(segments[:10]):  # Show first 10
         response += f"\n[{seg.start:.1f}s - {seg.end:.1f}s] {seg.text}"
-    
+
     if len(segments) > 10:
         response += f"\n\n... and {len(segments) - 10} more segments"
-    
+
     return response
 
 
 async def handle_analyze_video(args: dict[str, Any]) -> str:
     """Handle analyze_video tool call."""
     input_path = Path(args["input_path"])
-    
+
     config = ProcessingConfig()
     processor = VideoProcessor(config)
-    
+
     loop = asyncio.get_event_loop()
     result = await loop.run_in_executor(
         None,
         lambda: processor.analyze_only(input_path)
     )
-    
+
     response = f"""**Video Analysis:**
 
 **Duration:** {result.original_duration:.1f}s
@@ -398,13 +398,13 @@ async def handle_analyze_video(args: dict[str, Any]) -> str:
 
 **Edit Decisions ({len(result.edit_decisions)}):**
 """
-    
+
     for i, edit in enumerate(result.edit_decisions[:10]):
         response += f"\n- [{edit.start:.1f}s - {edit.end:.1f}s] {edit.edit_type.value}: {edit.reason}"
-    
+
     if len(result.edit_decisions) > 10:
         response += f"\n\n... and {len(result.edit_decisions) - 10} more edits"
-    
+
     return response
 
 
@@ -413,25 +413,25 @@ async def handle_generate_captions(args: dict[str, Any]) -> str:
     input_path = Path(args["input_path"])
     output_path = args.get("output_path")
     format_str = args.get("format", "srt")
-    
+
     format_map = {"srt": ExportFormat.SRT, "vtt": ExportFormat.VTT}
     caption_format = format_map.get(format_str, ExportFormat.SRT)
-    
+
     if not output_path:
         output_path = input_path.parent / f"{input_path.stem}.{format_str}"
-    
+
     config = ProcessingConfig()
     processor = VideoProcessor(config)
-    
+
     loop = asyncio.get_event_loop()
     segments = await loop.run_in_executor(
         None,
         lambda: processor.transcribe_only(input_path)
     )
-    
+
     from opengling.export.captions import export_captions
     caption_path = export_captions(segments, Path(output_path), caption_format)
-    
+
     return f"Captions generated successfully!\n\n**Output:** {caption_path}\n**Format:** {format_str.upper()}\n**Segments:** {len(segments)}"
 
 
@@ -439,35 +439,35 @@ async def handle_generate_youtube_metadata(args: dict[str, Any]) -> str:
     """Handle generate_youtube_metadata tool call."""
     input_path = Path(args["input_path"])
     context = args.get("context")
-    
+
     config = ProcessingConfig(
         generate_youtube_metadata=True,
         ollama_model=args.get("ollama_model", "llama3.2"),
     )
-    
+
     processor = VideoProcessor(config)
-    
+
     loop = asyncio.get_event_loop()
     segments = await loop.run_in_executor(
         None,
         lambda: processor.transcribe_only(input_path)
     )
-    
+
     from opengling.core.youtube import YouTubeGenerator, format_chapters_for_youtube
-    
+
     generator = YouTubeGenerator(config)
-    
+
     # Get video duration
     from opengling.core.render import get_duration
     duration = get_duration(input_path)
-    
+
     metadata = await loop.run_in_executor(
         None,
         lambda: generator.generate_metadata(segments, duration, context)
     )
-    
+
     chapters_text = format_chapters_for_youtube(metadata.chapters)
-    
+
     return f"""**Generated YouTube Metadata:**
 
 **Title:**
@@ -489,32 +489,32 @@ async def handle_export_timeline(args: dict[str, Any]) -> str:
     input_path = Path(args["input_path"])
     output_path = args.get("output_path")
     format_str = args["format"]
-    
+
     format_map = {
         "fcpxml": ExportFormat.FCPXML,
         "premiere_xml": ExportFormat.PREMIERE_XML,
         "davinci_edl": ExportFormat.DAVINCI_EDL,
     }
     export_format = format_map[format_str]
-    
+
     if not output_path:
         ext = {"fcpxml": ".fcpxml", "premiere_xml": ".xml", "davinci_edl": ".edl"}
         output_path = input_path.parent / f"{input_path.stem}_timeline{ext[format_str]}"
-    
+
     config = ProcessingConfig(output_format=export_format)
     processor = VideoProcessor(config)
-    
+
     loop = asyncio.get_event_loop()
     result = await loop.run_in_executor(
         None,
         lambda: processor.analyze_only(input_path)
     )
-    
-    from opengling.export import export_timeline
+
     from opengling.core.render import get_duration
-    
+    from opengling.export import export_timeline
+
     duration = get_duration(input_path)
-    
+
     timeline_path = export_timeline(
         result.edit_decisions,
         Path(output_path),
@@ -522,13 +522,13 @@ async def handle_export_timeline(args: dict[str, Any]) -> str:
         duration,
         str(input_path),
     )
-    
+
     format_names = {
         "fcpxml": "Final Cut Pro XML",
         "premiere_xml": "Adobe Premiere Pro XML",
         "davinci_edl": "DaVinci Resolve EDL",
     }
-    
+
     return f"""Timeline exported successfully!
 
 **Output:** {timeline_path}
@@ -543,11 +543,11 @@ def main():
     """Run the MCP server."""
     logging.basicConfig(level=logging.INFO)
     logger.info("Starting OpenGling MCP Server...")
-    
+
     async def run():
         async with stdio_server() as (read_stream, write_stream):
             await server.run(read_stream, write_stream, server.create_initialization_options())
-    
+
     asyncio.run(run())
 
 

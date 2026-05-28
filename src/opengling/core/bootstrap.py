@@ -7,7 +7,6 @@ import platform
 import shutil
 import subprocess
 import sys
-from pathlib import Path
 from typing import Optional
 
 
@@ -211,6 +210,21 @@ def check_all(auto_install: bool = True) -> list[DependencyIssue]:
                 console_print("spaCy model auto-install failed.")
         if spacy_issue:
             issues.append(spacy_issue)
+
+    # 4. yt-dlp (non-critical — только для скачивания по URL)
+    try:
+        from opengling.core.url_downloader import find_ytdlp
+        find_ytdlp()
+    except (ImportError, RuntimeError):
+        issues.append(DependencyIssue(
+            name="yt-dlp",
+            critical=False,
+            install_cmd="pip install yt-dlp",
+            message=(
+                "yt-dlp не найден. Скачивание видео по URL будет недоступно.\n"
+                "  Установите: pip install yt-dlp"
+            ),
+        ))
 
     return issues
 

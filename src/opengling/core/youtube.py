@@ -17,16 +17,16 @@ logger = logging.getLogger(__name__)
 
 class YouTubeGenerator:
     """Generates YouTube-optimized titles, descriptions, and chapters."""
-    
+
     def __init__(self, config: ProcessingConfig):
         self.config = config
         self._client = None
-        
+
     def _load_client(self):
         """Lazy load Ollama client."""
         if self._client is not None:
             return
-            
+
         try:
             import ollama
             self._client = ollama
@@ -36,7 +36,7 @@ class YouTubeGenerator:
                 "Install with: pip install opengling[youtube]\n"
                 "Also ensure Ollama is running: https://ollama.ai"
             )
-    
+
     def generate_metadata(
         self,
         segments: list[TranscriptSegment],
@@ -45,12 +45,12 @@ class YouTubeGenerator:
     ) -> YouTubeMetadata:
         """
         Generate YouTube metadata from transcript.
-        
+
         Args:
             segments: Transcript segments
             video_duration: Total video duration in seconds
             context: Optional context about the video (channel name, niche, etc.)
-            
+
         Returns:
             YouTubeMetadata with title, description, tags, and chapters
         """
@@ -61,27 +61,27 @@ class YouTubeGenerator:
                 tags=[],
                 chapters=[],
             )
-            
+
         logger.info("Generating YouTube metadata...")
-        
+
         self._load_client()
-        
+
         # Combine transcript
         full_transcript = " ".join(seg.text for seg in segments)
-        
+
         # Generate each component
         title = self._generate_title(full_transcript, context)
         description = self._generate_description(full_transcript, context)
         tags = self._generate_tags(full_transcript, title)
         chapters = self._generate_chapters(segments, video_duration)
-        
+
         return YouTubeMetadata(
             title=title,
             description=description,
             tags=tags,
             chapters=chapters,
         )
-    
+
     def _generate_title(
         self,
         transcript: str,
@@ -115,7 +115,7 @@ Respond with ONLY the title, nothing else."""
         except Exception as e:
             logger.warning(f"Failed to generate title: {e}")
             return "Untitled Video"
-    
+
     def _generate_description(
         self,
         transcript: str,
@@ -146,7 +146,7 @@ Write the description:"""
         except Exception as e:
             logger.warning(f"Failed to generate description: {e}")
             return "Video description"
-    
+
     def _generate_tags(
         self,
         transcript: str,
@@ -180,7 +180,7 @@ Respond with comma-separated tags only, no explanations:"""
         except Exception as e:
             logger.warning(f"Failed to generate tags: {e}")
             return []
-    
+
     def _generate_chapters(
         self,
         segments: list[TranscriptSegment],
@@ -189,44 +189,44 @@ Respond with comma-separated tags only, no explanations:"""
         """Generate YouTube chapters from transcript segments."""
         if not segments:
             return []
-        
+
         # Group segments into logical sections (roughly 2-5 min each)
         min_chapter_duration = 60  # 1 minute minimum
         max_chapter_duration = 300  # 5 minutes maximum
-        
+
         chapters = []
         current_chapter_start = 0.0
         current_chapter_text = []
-        
+
         for segment in segments:
             current_chapter_text.append(segment.text)
             chapter_duration = segment.end - current_chapter_start
-            
+
             # Check if we should end this chapter
             should_end = (
                 chapter_duration >= max_chapter_duration or
-                (chapter_duration >= min_chapter_duration and 
+                (chapter_duration >= min_chapter_duration and
                  self._is_topic_break(segment.text))
             )
-            
+
             if should_end and segment.end < video_duration - 30:
                 # Generate chapter title
                 chapter_text = " ".join(current_chapter_text)
                 chapter_title = self._generate_chapter_title(chapter_text)
-                
+
                 chapters.append((current_chapter_start, chapter_title))
-                
+
                 # Start new chapter
                 current_chapter_start = segment.end
                 current_chapter_text = []
-        
+
         # Add first chapter at 0:00 if not already there
         if not chapters or chapters[0][0] > 0:
             first_text = " ".join(seg.text for seg in segments[:5])
             chapters.insert(0, (0.0, self._generate_chapter_title(first_text)))
-        
+
         return chapters
-    
+
     def _is_topic_break(self, text: str) -> bool:
         """Detect if this segment might be a topic break."""
         # Simple heuristics for topic breaks
@@ -235,10 +235,10 @@ Respond with comma-separated tags only, no explanations:"""
             "the next", "let's talk about", "speaking of",
             "alright so", "okay so", "now,", "finally,"
         ]
-        
+
         text_lower = text.lower()
         return any(indicator in text_lower for indicator in break_indicators)
-    
+
     def _generate_chapter_title(self, text: str) -> str:
         """Generate a short chapter title from text."""
         prompt = f"""Based on this transcript section, write a short YouTube chapter title (2-5 words).
@@ -269,10 +269,10 @@ def format_chapters_for_youtube(
 ) -> str:
     """
     Format chapters for YouTube description.
-    
+
     Args:
         chapters: List of (timestamp, title) tuples
-        
+
     Returns:
         Formatted chapter string for YouTube description
     """
@@ -281,18 +281,18 @@ def format_chapters_for_youtube(
         minutes = int(timestamp // 60)
         seconds = int(timestamp % 60)
         lines.append(f"{minutes}:{seconds:02d} {title}")
-    
+
     return "\n".join(lines)
 
 
 def generate_hashtags(tags: list[str], limit: int = 3) -> str:
     """
     Generate hashtags from tags for YouTube description.
-    
+
     Args:
         tags: List of tags
         limit: Maximum number of hashtags
-        
+
     Returns:
         Formatted hashtag string
     """
@@ -302,6 +302,6 @@ def generate_hashtags(tags: list[str], limit: int = 3) -> str:
         hashtag = re.sub(r'[^a-zA-Z0-9]', '', tag)
         if hashtag:
             hashtags.append(f"#{hashtag}")
-    
+
     return " ".join(hashtags)
 

@@ -7,7 +7,7 @@ import logging
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Any
+from typing import Optional
 
 from opengling.core.models import (
     EditDecision,
@@ -30,83 +30,83 @@ PROJECT_VERSION = "1.0.0"
 class Project:
     """
     OpenGling project file containing all processing state.
-    
+
     This allows users to save their work and resume editing later.
     """
     # Metadata
     version: str = PROJECT_VERSION
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
     modified_at: str = field(default_factory=lambda: datetime.now().isoformat())
-    
+
     # Source information
     input_path: str = ""
     input_filename: str = ""
     original_duration: float = 0.0
-    
+
     # Configuration
     config: dict = field(default_factory=dict)
-    
+
     # Transcript
     segments: list[dict] = field(default_factory=list)
     full_transcript: str = ""
-    
+
     # Edit decisions
     edit_decisions: list[dict] = field(default_factory=list)
-    
+
     # Optional data
     zoom_keyframes: list[dict] = field(default_factory=list)
     youtube_metadata: Optional[dict] = None
-    
+
     # Stats
     edited_duration: float = 0.0
     silences_removed: int = 0
     fillers_removed: int = 0
     bad_takes_removed: int = 0
-    
+
     def save(self, path: Path | str) -> Path:
         """
         Save project to JSON file.
-        
+
         Args:
             path: Output file path
-            
+
         Returns:
             Path to saved file
         """
         path = Path(path)
         if not path.suffix:
             path = path.with_suffix('.opengling')
-        
+
         self.modified_at = datetime.now().isoformat()
-        
+
         with open(path, 'w', encoding='utf-8') as f:
             json.dump(asdict(self), f, indent=2, ensure_ascii=False)
-        
+
         logger.info(f"Project saved to {path}")
         return path
-    
+
     @classmethod
     def load(cls, path: Path | str) -> 'Project':
         """
         Load project from JSON file.
-        
+
         Args:
             path: Path to project file
-            
+
         Returns:
             Loaded Project instance
         """
         path = Path(path)
-        
+
         with open(path, 'r', encoding='utf-8') as f:
             data = json.load(f)
-        
+
         # Version compatibility check
         file_version = data.get('version', '0.0.0')
         if file_version != PROJECT_VERSION:
             logger.warning(f"Project version mismatch: {file_version} vs {PROJECT_VERSION}")
             # Could add migration logic here
-        
+
         project = cls(
             version=data.get('version', PROJECT_VERSION),
             created_at=data.get('created_at', ''),
@@ -125,10 +125,10 @@ class Project:
             fillers_removed=data.get('fillers_removed', 0),
             bad_takes_removed=data.get('bad_takes_removed', 0),
         )
-        
+
         logger.info(f"Project loaded from {path}")
         return project
-    
+
     @classmethod
     def from_result(
         cls,
@@ -137,11 +137,11 @@ class Project:
     ) -> 'Project':
         """
         Create a Project from a ProcessingResult.
-        
+
         Args:
             result: Processing result to convert
             config: Processing configuration used
-            
+
         Returns:
             New Project instance
         """
@@ -160,11 +160,11 @@ class Project:
             fillers_removed=result.fillers_removed,
             bad_takes_removed=result.bad_takes_removed,
         )
-    
+
     def to_result(self) -> ProcessingResult:
         """
         Convert Project back to a ProcessingResult.
-        
+
         Returns:
             ProcessingResult instance
         """
@@ -181,11 +181,11 @@ class Project:
             fillers_removed=self.fillers_removed,
             bad_takes_removed=self.bad_takes_removed,
         )
-    
+
     def to_config(self) -> ProcessingConfig:
         """
         Convert stored config dict back to ProcessingConfig.
-        
+
         Returns:
             ProcessingConfig instance
         """
@@ -225,7 +225,7 @@ def _dict_to_config(d: dict) -> ProcessingConfig:
     """Convert dictionary to ProcessingConfig."""
     output_format = ExportFormat(d.get('output_format', 'mp4'))
     caption_format = ExportFormat(d['caption_format']) if d.get('caption_format') else None
-    
+
     return ProcessingConfig(
         remove_silences=d.get('remove_silences', True),
         silence_threshold=d.get('silence_threshold', 0.5),

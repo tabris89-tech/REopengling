@@ -1,10 +1,10 @@
 """Core processing modules for OpenGling."""
 
 from opengling.core.models import (
-    ProcessingConfig,
     EditDecision,
-    TranscriptSegment,
+    ProcessingConfig,
     ProcessingResult,
+    TranscriptSegment,
 )
 from opengling.core.processor import VideoProcessor
 

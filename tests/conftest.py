@@ -1,15 +1,14 @@
 """Pytest configuration and fixtures for OpenGling tests."""
 
-import os
+# Add src to path for imports
+import sys
 import tempfile
 from pathlib import Path
 from typing import Generator
 
-import pytest
 import numpy as np
+import pytest
 
-# Add src to path for imports
-import sys
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 
@@ -27,40 +26,40 @@ def sample_audio_path(temp_dir: Path) -> Path:
         from scipy.io import wavfile
     except ImportError:
         pytest.skip("scipy not installed")
-    
+
     # Generate 5 seconds of audio with speech-like patterns
     sample_rate = 16000
     duration = 5.0
     t = np.linspace(0, duration, int(sample_rate * duration))
-    
+
     # Create pattern: speech, silence, speech, silence, speech
     audio = np.zeros_like(t)
-    
+
     # Speech segment 1: 0-1s
     mask1 = (t >= 0) & (t < 1)
     audio[mask1] = 0.5 * np.sin(2 * np.pi * 200 * t[mask1]) + 0.3 * np.sin(2 * np.pi * 400 * t[mask1])
-    
+
     # Silence: 1-2s (already zeros)
-    
+
     # Speech segment 2: 2-3.5s
     mask2 = (t >= 2) & (t < 3.5)
     audio[mask2] = 0.5 * np.sin(2 * np.pi * 250 * t[mask2]) + 0.2 * np.sin(2 * np.pi * 500 * t[mask2])
-    
+
     # Silence: 3.5-4s
-    
+
     # Speech segment 3: 4-5s
     mask3 = (t >= 4) & (t < 5)
     audio[mask3] = 0.4 * np.sin(2 * np.pi * 180 * t[mask3])
-    
+
     # Add some noise
     audio += np.random.randn(len(audio)) * 0.01
-    
+
     # Normalize to int16 range
     audio = (audio * 32767).astype(np.int16)
-    
+
     audio_path = temp_dir / "test_audio.wav"
     wavfile.write(str(audio_path), sample_rate, audio)
-    
+
     return audio_path
 
 
@@ -71,14 +70,14 @@ def sample_video_path(temp_dir: Path, sample_audio_path: Path) -> Path:
         import ffmpeg
     except ImportError:
         pytest.skip("ffmpeg-python not installed")
-    
+
     video_path = temp_dir / "test_video.mp4"
-    
+
     # Create a simple video with the audio
     try:
         (
             ffmpeg
-            .input(f"color=c=blue:size=640x480:rate=30:duration=5", f="lavfi")
+            .input("color=c=blue:size=640x480:rate=30:duration=5", f="lavfi")
             .output(
                 str(video_path),
                 vcodec="libx264",
@@ -90,7 +89,7 @@ def sample_video_path(temp_dir: Path, sample_audio_path: Path) -> Path:
         )
     except ffmpeg.Error:
         pytest.skip("ffmpeg not available")
-    
+
     return video_path
 
 
@@ -98,7 +97,7 @@ def sample_video_path(temp_dir: Path, sample_audio_path: Path) -> Path:
 def sample_transcript():
     """Create sample transcript segments for testing."""
     from opengling.core.models import TranscriptSegment, TranscriptWord
-    
+
     return [
         TranscriptSegment(
             text="Hello um this is a test",
@@ -154,7 +153,7 @@ def default_config():
 def sample_edit_decisions():
     """Create sample edit decisions for testing."""
     from opengling.core.models import EditDecision, EditType
-    
+
     return [
         EditDecision(
             start=1.0,

@@ -14,14 +14,18 @@ from pathlib import Path
 from typing import Optional
 
 import numpy as np
-from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks
+from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
 from opengling.core.models import (
-    ProcessingConfig, ExportFormat, EditDecision, EditType,
-    parse_time_to_seconds, validate_time_range,
+    EditDecision,
+    EditType,
+    ExportFormat,
+    ProcessingConfig,
+    parse_time_to_seconds,
+    validate_time_range,
 )
 from opengling.core.processor import VideoProcessor
 
@@ -74,6 +78,13 @@ class ExportRequest(BaseModel):
     """Request to export processed video."""
     job_id: str
     format: str = "mp4"
+
+
+class DownloadUrlRequest(BaseModel):
+    """Request to download video from URL."""
+    url: str
+    start_time: Optional[str] = None
+    end_time: Optional[str] = None
 
 
 # Job cleanup thread
@@ -139,23 +150,38 @@ async def upload_video(
 ):
     """Upload a video file for processing."""
     job_id = str(uuid.uuid4())
-    
+
     # Check file size before reading into memory
-    MAX_UPLOAD_SIZE = 2 * 1024 * 1024 * 1024  # 2 GB
-    if file.size and file.size > MAX_UPLOAD_SIZE:
+    max_upload_size = 4 * 1024 * 1024 * 1024  # 4 GB
+    if file.size and file.size > max_upload_size:
         return JSONResponse(
             status_code=413,
-            content={"detail": f"File too large. Maximum size is 2 GB, got {file.size / (1024*1024*1024):.1f} GB"}
+            content={"detail": f"File too large. Maximum size is 4 GB, got {file.size / (1024*1024*1024):.1f} GB"}
         )
-    
-    # Save uploaded file
+
+    # Save uploaded file (streaming to prevent OOM on large files)
     temp_dir = Path(tempfile.mkdtemp())
     input_path = temp_dir / file.filename
-    
+
+    chunk_size = 8 * 1024 * 1024  # 8 MB chunks
+    total_size = 0
+
     with open(input_path, "wb") as f:
-        content = await file.read()
-        f.write(content)
-    
+        while True:
+            chunk = await file.read(chunk_size)
+            if not chunk:
+                break
+            total_size += len(chunk)
+            if total_size > max_upload_size:
+                f.close()
+                input_path.unlink(missing_ok=True)
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                return JSONResponse(
+                    status_code=413,
+                    content={"detail": f"File too large. Maximum size is 4 GB, got {total_size / (1024*1024*1024):.1f} GB"}
+                )
+            f.write(chunk)
+
     with jobs_lock:
         jobs[job_id] = {
             "id": job_id,
@@ -167,8 +193,96 @@ async def upload_video(
             "temp_dir": str(temp_dir),
             "created_at": time.time(),
         }
-    
+
     return {"job_id": job_id, "filename": file.filename}
+
+
+@app.post("/api/download-from-url")
+async def download_from_url(
+    request: DownloadUrlRequest,
+    background_tasks: BackgroundTasks,
+):
+    """Download video from URL and start processing."""
+    url = request.url.strip()
+
+    if not url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=422, detail="URL должен начинаться с http:// или https://")
+
+    job_id = str(uuid.uuid4())
+    temp_dir = Path(tempfile.mkdtemp())
+
+    # Parse time range
+    start_time_sec = None
+    end_time_sec = None
+    if request.start_time or request.end_time:
+        try:
+            if request.start_time:
+                start_time_sec = parse_time_to_seconds(request.start_time)
+            if request.end_time:
+                end_time_sec = parse_time_to_seconds(request.end_time)
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+
+    with jobs_lock:
+        jobs[job_id] = {
+            "id": job_id,
+            "status": "downloading",
+            "progress": 0,
+            "stage": "Начинаем скачивание...",
+            "filename": url.split("/")[-1],
+            "input_path": "",
+            "temp_dir": str(temp_dir),
+            "created_at": time.time(),
+        }
+
+    background_tasks.add_task(download_url_task, job_id, url, start_time_sec, end_time_sec)
+
+    return {"job_id": job_id, "url": url}
+
+
+async def download_url_task(job_id: str, url: str, start_time: float, end_time: float):
+    """Background task: download video from URL, then auto-process."""
+    from opengling.core.url_downloader import download_url as dl_url
+
+    def progress_callback(percent: float, text: str):
+        with jobs_lock:
+            if job_id in jobs:
+                jobs[job_id]["progress"] = int(percent * 100)
+                jobs[job_id]["stage"] = text
+
+    try:
+        with jobs_lock:
+            temp_dir = Path(jobs[job_id]["temp_dir"])
+
+        with jobs_lock:
+            jobs[job_id]["stage"] = "Скачивание из URL..."
+
+        downloaded = await asyncio.get_running_loop().run_in_executor(
+            None,
+            lambda: dl_url(
+                url=url,
+                output_dir=temp_dir,
+                progress_callback=progress_callback,
+                start_time=start_time,
+                end_time=end_time,
+            ),
+        )
+
+        with jobs_lock:
+            jobs[job_id]["input_path"] = str(downloaded)
+            jobs[job_id]["filename"] = downloaded.name
+            jobs[job_id]["status"] = "uploaded"
+            jobs[job_id]["progress"] = 100
+            jobs[job_id]["stage"] = "Скачивание завершено"
+
+        logger.info(f"Downloaded {url} to {downloaded}")
+
+    except Exception as e:
+        logger.exception(f"Download failed for {url}")
+        with jobs_lock:
+            if job_id in jobs:
+                jobs[job_id]["status"] = "error"
+                jobs[job_id]["error"] = str(e)
 
 
 @app.post("/api/process/{job_id}")
@@ -181,15 +295,15 @@ async def start_processing(
     with jobs_lock:
         if job_id not in jobs:
             raise HTTPException(status_code=404, detail="Job not found")
-        
+
         job = jobs[job_id]
-        
+
         if job["status"] not in ("uploaded", "analyzed", "complete"):
             raise HTTPException(status_code=400, detail=f"Invalid job status: {job['status']}")
-        
+
         job["status"] = "processing"
         job["progress"] = 0
-    
+
     # Parse and validate time range
     start_time_sec = None
     end_time_sec = None
@@ -201,7 +315,7 @@ async def start_processing(
                 end_time_sec = parse_time_to_seconds(request.end_time)
         except ValueError as e:
             raise HTTPException(status_code=422, detail=str(e))
-        
+
         # Get video duration for validation
         try:
             import ffmpeg
@@ -209,13 +323,13 @@ async def start_processing(
             video_duration = float(probe['format']['duration'])
         except Exception:
             video_duration = 0.0
-        
+
         errors = validate_time_range(start_time_sec, end_time_sec, video_duration)
         if errors:
             raise HTTPException(status_code=422, detail="; ".join(errors))
-    
+
     background_tasks.add_task(process_video_task, job_id, request, start_time_sec, end_time_sec)
-    
+
     return {"status": "processing", "job_id": job_id}
 
 
@@ -223,7 +337,7 @@ async def process_video_task(job_id: str, request: ProcessingRequest, start_time
     """Background task to process video."""
     with jobs_lock:
         job = jobs[job_id]
-    
+
     try:
         config = ProcessingConfig(
             remove_silences=request.remove_silences,
@@ -236,25 +350,25 @@ async def process_video_task(job_id: str, request: ProcessingRequest, start_time
             start_time=start_time_sec,
             end_time=end_time_sec,
         )
-        
+
         processor = VideoProcessor(config)
-        
+
         def progress_callback(stage: str, percent: float):
             with jobs_lock:
                 if job_id not in jobs:
                     return
                 jobs[job_id]["stage"] = stage
                 jobs[job_id]["progress"] = int(percent * 100)
-        
+
         input_path = Path(job["input_path"])
-        
+
         # Run in thread pool with progress callback
         loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(
             None,
             lambda: processor.analyze_only(input_path, progress_callback)
         )
-        
+
         with jobs_lock:
             if job_id not in jobs:
                 return
@@ -290,7 +404,7 @@ async def process_video_task(job_id: str, request: ProcessingRequest, start_time
                     for edit in result.edit_decisions
                 ],
             }
-        
+
     except Exception as e:
         logger.exception("Processing error")
         with jobs_lock:
@@ -306,9 +420,9 @@ async def get_status(job_id: str):
     with jobs_lock:
         if job_id not in jobs:
             raise HTTPException(status_code=404, detail="Job not found")
-        
+
         job = jobs[job_id]
-        
+
         return {
             "id": job["id"],
             "status": job["status"],
@@ -326,13 +440,13 @@ async def stream_video(job_id: str):
     with jobs_lock:
         if job_id not in jobs:
             raise HTTPException(status_code=404, detail="Job not found")
-        
+
         job = jobs[job_id]
         input_path = Path(job["input_path"])
-    
+
     if not input_path.exists():
         raise HTTPException(status_code=404, detail="Video file not found")
-    
+
     # Determine content type
     suffix = input_path.suffix.lower()
     content_types = {
@@ -343,7 +457,7 @@ async def stream_video(job_id: str):
         ".avi": "video/x-msvideo",
     }
     content_type = content_types.get(suffix, "video/mp4")
-    
+
     return FileResponse(
         path=input_path,
         media_type=content_type,
@@ -357,13 +471,13 @@ async def get_waveform(job_id: str, samples: int = 500):
     with jobs_lock:
         if job_id not in jobs:
             raise HTTPException(status_code=404, detail="Job not found")
-        
+
         job = jobs[job_id]
         input_path = Path(job["input_path"])
-    
+
     if not input_path.exists():
         raise HTTPException(status_code=404, detail="Video file not found")
-    
+
     try:
         # Generate waveform data
         loop = asyncio.get_event_loop()
@@ -383,25 +497,25 @@ def generate_waveform(video_path: Path, samples: int = 500) -> list:
         from pydub import AudioSegment
     except ImportError:
         return [0.5] * samples  # Return flat line if pydub not available
-    
+
     try:
         # Extract audio
         audio = AudioSegment.from_file(str(video_path))
         audio = audio.set_channels(1)  # Mono
-        
+
         # Get raw audio data
         raw_data = np.array(audio.get_array_of_samples(), dtype=np.float32)
-        
+
         # Normalize
         max_val = np.max(np.abs(raw_data))
         if max_val > 0:
             raw_data = raw_data / max_val
-        
+
         # Downsample to desired number of samples
         chunk_size = len(raw_data) // samples
         if chunk_size < 1:
             chunk_size = 1
-        
+
         peaks = []
         for i in range(samples):
             start = i * chunk_size
@@ -414,7 +528,7 @@ def generate_waveform(video_path: Path, samples: int = 500) -> list:
                 chunk = raw_data[start:end]
                 peak = float(np.max(np.abs(chunk)))
                 peaks.append(peak)
-        
+
         return peaks
     except Exception as e:
         logger.warning(f"Waveform generation failed: {e}")
@@ -427,17 +541,17 @@ async def update_edit(job_id: str, update: EditUpdate):
     with jobs_lock:
         if job_id not in jobs:
             raise HTTPException(status_code=404, detail="Job not found")
-        
+
         job = jobs[job_id]
-        
+
         if "result" not in job:
             raise HTTPException(status_code=400, detail="Job not analyzed yet")
-        
+
         edits = job["result"]["edit_decisions"]
-        
+
         if update.edit_index < 0 or update.edit_index >= len(edits):
             raise HTTPException(status_code=400, detail="Invalid edit index")
-        
+
         # Save to undo history
         if job_id not in undo_history:
             undo_history[job_id] = []
@@ -447,10 +561,10 @@ async def update_edit(job_id: str, update: EditUpdate):
         })
         # Keep only last 50 undo states
         undo_history[job_id] = undo_history[job_id][-50:]
-        
+
         # Toggle the keep flag
         edits[update.edit_index]["keep"] = update.keep
-        
+
         # Recalculate stats
         cut_duration = sum(
             e["end"] - e["start"]
@@ -458,11 +572,11 @@ async def update_edit(job_id: str, update: EditUpdate):
             if not e["keep"]
         )
         original_duration = job["result"]["original_duration"]
-        
+
         job["result"]["edited_duration"] = original_duration - cut_duration
         job["result"]["time_saved"] = cut_duration
         job["result"]["time_saved_percentage"] = (cut_duration / original_duration) * 100 if original_duration > 0 else 0
-    
+
     return {"status": "updated"}
 
 
@@ -472,17 +586,17 @@ async def undo_edit(job_id: str):
     with jobs_lock:
         if job_id not in jobs:
             raise HTTPException(status_code=404, detail="Job not found")
-        
+
         if job_id not in undo_history or not undo_history[job_id]:
             raise HTTPException(status_code=400, detail="Nothing to undo")
-        
+
         job = jobs[job_id]
         edits = job["result"]["edit_decisions"]
-        
+
         # Pop last undo state
         undo_state = undo_history[job_id].pop()
         edits[undo_state["index"]]["keep"] = undo_state["previous_keep"]
-        
+
         # Recalculate stats
         cut_duration = sum(
             e["end"] - e["start"]
@@ -490,11 +604,11 @@ async def undo_edit(job_id: str):
             if not e["keep"]
         )
         original_duration = job["result"]["original_duration"]
-        
+
         job["result"]["edited_duration"] = original_duration - cut_duration
         job["result"]["time_saved"] = cut_duration
         job["result"]["time_saved_percentage"] = (cut_duration / original_duration) * 100 if original_duration > 0 else 0
-    
+
     return {"status": "undone"}
 
 
@@ -504,19 +618,19 @@ async def export_video(job_id: str, request: ExportRequest, background_tasks: Ba
     with jobs_lock:
         if job_id not in jobs:
             raise HTTPException(status_code=404, detail="Job not found")
-        
+
         job = jobs[job_id]
-        
+
         if "result" not in job:
             raise HTTPException(status_code=400, detail="Job not analyzed yet")
-        
+
         if job["status"] == "exporting":
             raise HTTPException(status_code=400, detail="Export already in progress")
-        
+
         job["status"] = "exporting"
-    
+
     background_tasks.add_task(export_video_task, job_id, request.format)
-    
+
     return {"status": "exporting"}
 
 
@@ -524,7 +638,7 @@ async def export_video_task(job_id: str, format: str):
     """Background task to export video."""
     with jobs_lock:
         job = jobs[job_id]
-    
+
     try:
         format_map = {
             "mp4": ExportFormat.MP4,
@@ -532,11 +646,11 @@ async def export_video_task(job_id: str, format: str):
             "premiere_xml": ExportFormat.PREMIERE_XML,
             "davinci_edl": ExportFormat.DAVINCI_EDL,
         }
-        
+
         export_format = format_map.get(format, ExportFormat.MP4)
-        
+
         input_path = Path(job["input_path"])
-        
+
         # Reconstruct edit decisions
         edit_decisions = [
             EditDecision(
@@ -548,26 +662,28 @@ async def export_video_task(job_id: str, format: str):
             )
             for e in job["result"]["edit_decisions"]
         ]
-        
+
         def progress_callback(stage: str, percent: float):
             with jobs_lock:
                 if job_id not in jobs:
                     return
                 jobs[job_id]["stage"] = stage
                 jobs[job_id]["progress"] = int(percent * 100)
-        
+
         loop = asyncio.get_running_loop()
-        
+
         if export_format == ExportFormat.MP4:
             output_path = input_path.parent / f"{input_path.stem}_edited.mp4"
-            
+
             def render_task():
-                import ffmpeg
                 import tempfile
+
+                import ffmpeg
+
                 from opengling.core.render import render_video
-                
+
                 progress_callback("Extracting audio", 0.0)
-                
+
                 with tempfile.TemporaryDirectory() as tmp:
                     tmp_path = Path(tmp)
                     audio_out = tmp_path / "audio.wav"
@@ -582,37 +698,37 @@ async def export_video_task(job_id: str, format: str):
                     except ffmpeg.Error as e:
                         logger.warning(f"Audio extraction failed for export: {e}")
                         audio_out = None
-                    
+
                     progress_callback("Rendering video", 0.2)
-                    
+
                     result_path = render_video(
                         input_path=input_path,
                         output_path=output_path,
                         edit_decisions=edit_decisions,
                         audio_path=audio_out,
                     )
-                    
+
                     progress_callback("Complete", 1.0)
                     return result_path
-            
+
             result_path = await loop.run_in_executor(None, render_task)
             with jobs_lock:
                 if job_id not in jobs:
                     return
                 jobs[job_id]["output_path"] = str(result_path)
         else:
-            from opengling.export import export_timeline
             from opengling.core.render import get_duration
-            
+            from opengling.export import export_timeline
+
             duration = get_duration(input_path)
             ext = {
                 ExportFormat.FCPXML: ".fcpxml",
                 ExportFormat.PREMIERE_XML: ".xml",
                 ExportFormat.DAVINCI_EDL: ".edl",
             }
-            
+
             output_path = input_path.parent / f"{input_path.stem}_edited{ext[export_format]}"
-            
+
             await loop.run_in_executor(
                 None,
                 lambda: export_timeline(
@@ -627,12 +743,12 @@ async def export_video_task(job_id: str, format: str):
                 if job_id not in jobs:
                     return
                 jobs[job_id]["output_path"] = str(output_path)
-        
+
         with jobs_lock:
             if job_id not in jobs:
                 return
             jobs[job_id]["status"] = "complete"
-        
+
     except Exception as e:
         logger.exception("Export error")
         with jobs_lock:
@@ -648,17 +764,17 @@ async def download_file(job_id: str):
     with jobs_lock:
         if job_id not in jobs:
             raise HTTPException(status_code=404, detail="Job not found")
-        
+
         job = jobs[job_id]
-        
+
         if "output_path" not in job:
             raise HTTPException(status_code=400, detail="No output file available")
-        
+
         output_path = Path(job["output_path"])
-    
+
     if not output_path.exists():
         raise HTTPException(status_code=404, detail="Output file not found")
-    
+
     return FileResponse(
         path=output_path,
         filename=output_path.name,
@@ -668,7 +784,7 @@ async def download_file(job_id: str):
 
 def get_index_html() -> HTMLResponse:
     """Return the main HTML page with video.js and waveform."""
-    html = """<!DOCTYPE html>
+    html = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -680,7 +796,7 @@ def get_index_html() -> HTMLResponse:
     <script src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Outfit:wght@400;500;600;700&display=swap');
-        
+
         :root {
             --primary: #8b5cf6;
             --primary-dark: #7c3aed;
@@ -690,61 +806,61 @@ def get_index_html() -> HTMLResponse:
             --bg-hover: #241e3a;
             --border: rgba(139, 92, 246, 0.2);
         }
-        
+
         * { box-sizing: border-box; }
-        
+
         body {
             font-family: 'Outfit', sans-serif;
             background: var(--bg-dark);
-            background-image: 
+            background-image:
                 radial-gradient(ellipse at top, rgba(139, 92, 246, 0.1) 0%, transparent 50%),
                 radial-gradient(ellipse at bottom right, rgba(6, 182, 212, 0.05) 0%, transparent 50%);
             min-height: 100vh;
         }
-        
+
         .mono { font-family: 'JetBrains Mono', monospace; }
-        
+
         .card {
             background: var(--bg-card);
             border: 1px solid var(--border);
             border-radius: 16px;
         }
-        
+
         .btn-primary {
             background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
             border: none;
             transition: all 0.2s ease;
         }
-        
+
         .btn-primary:hover {
             transform: translateY(-2px);
             box-shadow: 0 8px 24px rgba(139, 92, 246, 0.4);
         }
-        
+
         .progress-bar {
             background: linear-gradient(90deg, var(--primary), var(--accent));
         }
-        
+
         /* Video.js custom theme */
         .video-js {
             border-radius: 12px;
             overflow: hidden;
         }
-        
+
         .video-js .vjs-control-bar {
             background: linear-gradient(transparent, rgba(0,0,0,0.8));
             height: 4em;
         }
-        
+
         .video-js .vjs-play-progress,
         .video-js .vjs-volume-level {
             background: var(--primary);
         }
-        
+
         .video-js .vjs-slider {
             background: rgba(255,255,255,0.2);
         }
-        
+
         /* Waveform container */
         .waveform-container {
             position: relative;
@@ -753,12 +869,12 @@ def get_index_html() -> HTMLResponse:
             border-radius: 8px;
             overflow: hidden;
         }
-        
+
         .waveform-canvas {
             width: 100%;
             height: 100%;
         }
-        
+
         .waveform-overlay {
             position: absolute;
             top: 0;
@@ -767,7 +883,7 @@ def get_index_html() -> HTMLResponse:
             height: 100%;
             pointer-events: none;
         }
-        
+
         .waveform-playhead {
             position: absolute;
             top: 0;
@@ -777,7 +893,7 @@ def get_index_html() -> HTMLResponse:
             pointer-events: none;
             z-index: 10;
         }
-        
+
         /* Edit regions on waveform */
         .edit-region {
             position: absolute;
@@ -786,48 +902,48 @@ def get_index_html() -> HTMLResponse:
             opacity: 0.3;
             pointer-events: none;
         }
-        
+
         .edit-region.cut { background: #ef4444; }
         .edit-region.keep { background: #22c55e; }
-        
+
         /* Edit list items */
         .edit-item {
             transition: all 0.15s ease;
             cursor: pointer;
         }
-        
+
         .edit-item:hover {
             background: var(--bg-hover);
         }
-        
+
         .edit-item.cut {
             border-left: 3px solid #ef4444;
         }
-        
+
         .edit-item.keep {
             border-left: 3px solid #22c55e;
         }
-        
+
         .edit-item.active {
             background: var(--bg-hover);
             box-shadow: inset 0 0 0 1px var(--primary);
         }
-        
+
         /* Scrollbar */
         ::-webkit-scrollbar {
             width: 8px;
             height: 8px;
         }
-        
+
         ::-webkit-scrollbar-track {
             background: var(--bg-dark);
         }
-        
+
         ::-webkit-scrollbar-thumb {
             background: var(--primary);
             border-radius: 4px;
         }
-        
+
         /* Keyboard shortcut hints */
         .kbd {
             background: rgba(255,255,255,0.1);
@@ -837,17 +953,17 @@ def get_index_html() -> HTMLResponse:
             font-size: 11px;
             font-family: 'JetBrains Mono', monospace;
         }
-        
+
         /* Stats animation */
         @keyframes countUp {
             from { opacity: 0; transform: translateY(10px); }
             to { opacity: 1; transform: translateY(0); }
         }
-        
+
         .stat-value {
             animation: countUp 0.5s ease-out;
         }
-        
+
         .glow {
             box-shadow: 0 0 40px rgba(139, 92, 246, 0.3);
         }
@@ -971,7 +1087,7 @@ def get_index_html() -> HTMLResponse:
                 </div>
                 <h2 class="text-3xl font-bold mb-3">Upload Your Video</h2>
                 <p class="text-gray-400 mb-8">AI will remove silences, filler words, and bad takes</p>
-                
+
                 <!-- Time range inputs -->
                 <div class="flex gap-4 mb-6 justify-center">
                     <div class="flex flex-col items-center">
@@ -989,7 +1105,44 @@ def get_index_html() -> HTMLResponse:
                 </div>
                 <p x-show="timeError" class="text-red-400 text-sm mb-4" x-text="timeError"></p>
                 <p class="text-xs text-gray-600 mb-6">Leave empty to process entire video</p>
-                
+
+                <!-- URL input -->
+                <div class="mb-6">
+                    <div class="flex items-center gap-2">
+                        <div class="flex-1">
+                            <input type="text" x-model="downloadUrl" placeholder="Or paste video URL (YouTube, VK, etc.)"
+                                   class="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-sm text-gray-200 focus:border-purple-500 focus:outline-none"
+                                   :disabled="isDownloading">
+                        </div>
+                        <button @click="downloadFromUrl" :disabled="!downloadUrl.trim() || isDownloading"
+                                class="btn-primary text-white font-semibold py-3 px-6 rounded-xl inline-flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap">
+                            <template x-if="!isDownloading">
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
+                                </svg>
+                            </template>
+                            <template x-if="isDownloading">
+                                <svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                </svg>
+                            </template>
+                            <span x-text="isDownloading ? 'Загрузка...' : 'Download from URL'"></span>
+                        </button>
+                    </div>
+                    <p x-show="urlError" class="text-red-400 text-xs mt-1" x-text="urlError"></p>
+                    <p class="text-xs text-gray-600 mt-1">Supports YouTube, VK, RuTube, and direct video links</p>
+                </div>
+
+                <div class="relative mb-6">
+                    <div class="absolute inset-0 flex items-center">
+                        <div class="w-full border-t border-gray-700"></div>
+                    </div>
+                    <div class="relative flex justify-center text-sm">
+                        <span class="px-4 bg-gray-900 text-gray-500">or</span>
+                    </div>
+                </div>
+
                 <label class="block">
                     <input type="file" accept="video/*,audio/*" @change="uploadFile($event)" class="hidden">
                     <div class="btn-primary text-white font-semibold py-4 px-10 rounded-xl cursor-pointer inline-flex items-center gap-2 text-lg">
@@ -999,13 +1152,13 @@ def get_index_html() -> HTMLResponse:
                         Choose Video
                     </div>
                 </label>
-                
+
                 <p class="mt-8 text-sm text-gray-500">Supports MP4, MOV, MKV, WEBM, MP3, WAV</p>
             </div>
         </div>
 
         <!-- Processing Section -->
-        <div x-show="jobId && status === 'processing'" class="flex flex-col items-center justify-center min-h-[70vh]">
+        <div x-show="jobId && (status === 'processing' || status === 'downloading')" class="flex flex-col items-center justify-center min-h-[70vh]">
             <div class="card p-12 text-center max-w-xl w-full">
                 <div class="w-24 h-24 mx-auto mb-8 rounded-full bg-gradient-to-br from-purple-500/20 to-cyan-400/20 flex items-center justify-center">
                     <svg class="w-12 h-12 text-purple-400 animate-spin" fill="none" viewBox="0 0 24 24">
@@ -1015,7 +1168,7 @@ def get_index_html() -> HTMLResponse:
                 </div>
                 <h2 class="text-2xl font-bold mb-2" x-text="stage || 'Processing...'"></h2>
                 <p class="text-gray-400 mb-8 mono text-sm" x-text="filename"></p>
-                
+
                 <div class="w-full bg-gray-800 rounded-full h-3 overflow-hidden">
                     <div class="progress-bar h-full rounded-full transition-all duration-300" :style="`width: ${progress}%`"></div>
                 </div>
@@ -1030,7 +1183,7 @@ def get_index_html() -> HTMLResponse:
                 <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
                     <!-- Video Player -->
                     <div class="lg:col-span-2">
-                        <video 
+                        <video
                             id="video-player"
                             class="video-js vjs-big-play-centered w-full"
                             controls
@@ -1040,20 +1193,20 @@ def get_index_html() -> HTMLResponse:
                             @loadedmetadata="onVideoLoaded($event)">
                             <source :src="`/api/video/${jobId}`" type="video/mp4">
                         </video>
-                        
+
                         <!-- Waveform -->
                         <div class="waveform-container mt-4 cursor-pointer" @click="seekToPosition($event)">
                             <canvas id="waveform-canvas" class="waveform-canvas"></canvas>
                             <div class="waveform-overlay" id="waveform-overlay"></div>
                             <div class="waveform-playhead" :style="`left: ${playheadPosition}%`"></div>
                         </div>
-                        
+
                         <div class="flex justify-between mt-2 text-xs text-gray-500 mono">
                             <span x-text="formatTime(currentTime)"></span>
                             <span x-text="formatTime(result?.original_duration)"></span>
                         </div>
                     </div>
-                    
+
                     <!-- Stats -->
                     <div class="space-y-4">
                         <div class="grid grid-cols-2 gap-3">
@@ -1066,13 +1219,13 @@ def get_index_html() -> HTMLResponse:
                                 <p class="text-xl font-bold text-green-400 mono stat-value" x-text="formatTime(result?.edited_duration)"></p>
                             </div>
                         </div>
-                        
+
                         <div class="bg-gradient-to-br from-purple-900/30 to-cyan-900/30 rounded-xl p-4 border border-purple-500/20">
                             <p class="text-xs text-gray-400 mb-1">Time Saved</p>
                             <p class="text-2xl font-bold text-cyan-400 mono" x-text="`${formatTime(result?.time_saved)}`"></p>
                             <p class="text-sm text-gray-500" x-text="`${result?.time_saved_percentage?.toFixed(1)}% reduction`"></p>
                         </div>
-                        
+
                         <div class="grid grid-cols-3 gap-2 text-center">
                             <div class="bg-gray-800/50 rounded-lg p-3">
                                 <p class="text-lg font-bold text-purple-400" x-text="result?.silences_removed || 0"></p>
@@ -1103,7 +1256,7 @@ def get_index_html() -> HTMLResponse:
                     </h3>
                     <div class="h-[400px] overflow-y-auto pr-2 space-y-2">
                         <template x-for="(segment, i) in result?.segments || []" :key="i">
-                            <div 
+                            <div
                                 class="p-3 rounded-lg bg-gray-800/50 hover:bg-gray-800 transition-colors cursor-pointer"
                                 :class="{ 'ring-1 ring-purple-500': isSegmentActive(segment) }"
                                 @click="seekTo(segment.start)">
@@ -1125,14 +1278,14 @@ def get_index_html() -> HTMLResponse:
                     </h3>
                     <div class="h-[400px] overflow-y-auto pr-2 space-y-2">
                         <template x-for="(edit, i) in result?.edit_decisions || []" :key="i">
-                            <div 
+                            <div
                                 class="edit-item p-3 rounded-lg"
                                 :class="[edit.keep ? 'keep' : 'cut', isEditActive(edit) ? 'active' : '', 'bg-gray-800/50']"
                                 @click="toggleEdit(i)"
                                 @dblclick="seekTo(edit.start)">
                                 <div class="flex items-center justify-between">
-                                    <span 
-                                        class="text-xs font-bold px-2 py-0.5 rounded" 
+                                    <span
+                                        class="text-xs font-bold px-2 py-0.5 rounded"
                                         :class="edit.keep ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'"
                                         x-text="edit.keep ? 'KEEP' : 'CUT'">
                                     </span>
@@ -1150,8 +1303,8 @@ def get_index_html() -> HTMLResponse:
             <div class="card p-6">
                 <h3 class="text-lg font-semibold mb-4">Export</h3>
                 <div class="flex flex-wrap gap-3">
-                    <button 
-                        @click="exportVideo('mp4')" 
+                    <button
+                        @click="exportVideo('mp4')"
                         class="btn-primary text-white font-medium py-3 px-8 rounded-xl flex items-center gap-2"
                         :disabled="status === 'exporting'">
                         <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1169,7 +1322,7 @@ def get_index_html() -> HTMLResponse:
                         DaVinci Resolve
                     </button>
                 </div>
-                
+
                 <div x-show="status === 'exporting'" class="mt-4 flex items-center gap-2 text-purple-400">
                     <svg class="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
                         <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
@@ -1177,7 +1330,7 @@ def get_index_html() -> HTMLResponse:
                     </svg>
                     Exporting video...
                 </div>
-                
+
                 <div x-show="status === 'complete'" class="mt-4">
                     <a :href="`/api/download/${jobId}`" class="inline-flex items-center gap-2 text-green-400 hover:text-green-300 font-medium">
                         <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1210,6 +1363,10 @@ def get_index_html() -> HTMLResponse:
                 startTime: '',
                 endTime: '',
                 timeError: '',
+                downloadUrl: '',
+                isDownloading: false,
+                isProcessing: false,
+                urlError: '',
 
                 addNotification(type, message) {
                     const id = ++this.notificationCounter;
@@ -1238,10 +1395,10 @@ def get_index_html() -> HTMLResponse:
                 validateTimeInputs() {
                     this.timeError = '';
                     if (!this.startTime && !this.endTime) return true;
-                    
+
                     const timeRegex = /^(\d{1,2}):(\d{2}):(\d{2})$/;
                     const mmssRegex = /^(\d{1,2}):(\d{2})$/;
-                    
+
                     const parseTime = (str) => {
                         let match = timeRegex.exec(str);
                         if (match) return parseInt(match[1])*3600 + parseInt(match[2])*60 + parseInt(match[3]);
@@ -1249,7 +1406,7 @@ def get_index_html() -> HTMLResponse:
                         if (match) return parseInt(match[1])*60 + parseInt(match[2]);
                         return NaN;
                     };
-                    
+
                     if (this.startTime && !timeRegex.test(this.startTime) && !mmssRegex.test(this.startTime)) {
                         this.timeError = 'Invalid start time format. Use HH:MM:SS or MM:SS';
                         return false;
@@ -1258,7 +1415,7 @@ def get_index_html() -> HTMLResponse:
                         this.timeError = 'Invalid end time format. Use HH:MM:SS or MM:SS';
                         return false;
                     }
-                    
+
                     if (this.startTime && this.endTime) {
                         const s = parseTime(this.startTime);
                         const e = parseTime(this.endTime);
@@ -1277,7 +1434,7 @@ def get_index_html() -> HTMLResponse:
                 async uploadFile(event) {
                     const file = event.target.files[0];
                     if (!file) return;
-                    
+
                     if (!this.validateTimeInputs()) return;
 
                     this.filename = file.name;
@@ -1300,7 +1457,52 @@ def get_index_html() -> HTMLResponse:
                     }
                 },
 
+                async downloadFromUrl() {
+                    const url = this.downloadUrl.trim();
+                    if (!url) return;
+
+                    if (!url.startsWith('http://') && !url.startsWith('https://')) {
+                        this.urlError = 'URL должен начинаться с http:// или https://';
+                        return;
+                    }
+                    this.urlError = '';
+
+                    if (!this.validateTimeInputs()) return;
+
+                    this.isDownloading = true;
+
+                    try {
+                        const response = await fetch('/api/download-from-url', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                url,
+                                start_time: this.startTime || null,
+                                end_time: this.endTime || null,
+                            })
+                        });
+
+                        if (!response.ok) {
+                            const err = await response.json();
+                            throw new Error(err.detail || 'Download failed');
+                        }
+
+                        const data = await response.json();
+                        this.jobId = data.job_id;
+                        this.addNotification('success', 'Скачивание начато');
+
+                        this.status = 'downloading';
+                        this.startPolling();
+                    } catch (error) {
+                        console.error('Download from URL error:', error);
+                        this.addNotification('error', error.message);
+                        this.isDownloading = false;
+                    }
+                },
+
                 async startProcessing() {
+                    if (this.isProcessing) return;
+                    this.isProcessing = true;
                     try {
                         const body = {
                             remove_silences: true,
@@ -1312,17 +1514,21 @@ def get_index_html() -> HTMLResponse:
                         };
                         if (this.startTime) body.start_time = this.startTime;
                         if (this.endTime) body.end_time = this.endTime;
-                        
+
                         await fetch(`/api/process/${this.jobId}`, {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify(body)
                         });
-                        
+
                         this.status = 'processing';
-                        this.startPolling();
+                        if (!this.pollInterval) {
+                            this.startPolling();
+                        }
                     } catch (error) {
                         console.error('Processing error:', error);
+                    } finally {
+                        this.isProcessing = false;
                     }
                 },
 
@@ -1331,13 +1537,24 @@ def get_index_html() -> HTMLResponse:
                         try {
                             const response = await fetch(`/api/status/${this.jobId}`);
                             const data = await response.json();
-                            
+
                             this.status = data.status;
                             this.progress = data.progress;
                             this.stage = data.stage;
-                            
+
                             if (data.result) {
                                 this.result = data.result;
+                            }
+
+                            if (data.status === 'downloading') {
+                                this.isDownloading = true;
+                            }
+
+                            if (data.status === 'uploaded') {
+                                this.isDownloading = false;
+                                this.addNotification('success', 'Скачивание завершено');
+                                await this.startProcessing();
+                                return;
                             }
 
                             if (data.status === 'analyzed') {
@@ -1365,6 +1582,7 @@ def get_index_html() -> HTMLResponse:
 
                             if (data.status === 'error') {
                                 clearInterval(this.pollInterval);
+                                this.isDownloading = false;
                                 this.addNotification('error', 'Ошибка: ' + data.error);
                             }
                         } catch (error) {
@@ -1397,19 +1615,19 @@ def get_index_html() -> HTMLResponse:
                 drawWaveform() {
                     const canvas = document.getElementById('waveform-canvas');
                     if (!canvas || !this.waveformData.length) return;
-                    
+
                     const ctx = canvas.getContext('2d');
                     const dpr = window.devicePixelRatio || 1;
-                    
+
                     canvas.width = canvas.offsetWidth * dpr;
                     canvas.height = canvas.offsetHeight * dpr;
                     ctx.scale(dpr, dpr);
-                    
+
                     const width = canvas.offsetWidth;
                     const height = canvas.offsetHeight;
                     const barWidth = width / this.waveformData.length;
                     const centerY = height / 2;
-                    
+
                     // Draw edit regions first
                     if (this.result?.edit_decisions) {
                         const duration = this.result.original_duration;
@@ -1420,19 +1638,19 @@ def get_index_html() -> HTMLResponse:
                             ctx.fillRect(startX, 0, endX - startX, height);
                         }
                     }
-                    
+
                     // Draw waveform bars
                     const gradient = ctx.createLinearGradient(0, 0, width, 0);
                     gradient.addColorStop(0, '#8b5cf6');
                     gradient.addColorStop(1, '#06b6d4');
-                    
+
                     ctx.fillStyle = gradient;
-                    
+
                     for (let i = 0; i < this.waveformData.length; i++) {
                         const peak = this.waveformData[i];
                         const barHeight = peak * height * 0.8;
                         const x = i * barWidth;
-                        
+
                         ctx.fillRect(x, centerY - barHeight / 2, Math.max(1, barWidth - 1), barHeight);
                     }
                 },
@@ -1488,12 +1706,12 @@ def get_index_html() -> HTMLResponse:
                         });
 
                         edit.keep = newKeep;
-                        
+
                         // Refresh stats
                         const response = await fetch(`/api/status/${this.jobId}`);
                         const data = await response.json();
                         this.result = data.result;
-                        
+
                         // Redraw waveform
                         this.drawWaveform();
                     } catch (error) {
@@ -1504,7 +1722,7 @@ def get_index_html() -> HTMLResponse:
                 async undo() {
                     try {
                         await fetch(`/api/undo/${this.jobId}`, { method: 'POST' });
-                        
+
                         const response = await fetch(`/api/status/${this.jobId}`);
                         const data = await response.json();
                         this.result = data.result;
@@ -1516,9 +1734,9 @@ def get_index_html() -> HTMLResponse:
 
                 handleKeydown(event) {
                     if (!this.jobId || this.status !== 'analyzed') return;
-                    
+
                     const video = document.getElementById('video-player');
-                    
+
                     switch(event.key) {
                         case ' ':
                             event.preventDefault();
@@ -1544,7 +1762,7 @@ def get_index_html() -> HTMLResponse:
                         case 'x':
                         case 'X':
                             // Toggle current edit
-                            const activeEdit = this.result?.edit_decisions?.findIndex(e => 
+                            const activeEdit = this.result?.edit_decisions?.findIndex(e =>
                                 this.currentTime >= e.start && this.currentTime <= e.end
                             );
                             if (activeEdit !== undefined && activeEdit >= 0) {
